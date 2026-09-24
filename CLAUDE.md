@@ -55,3 +55,4 @@ ClubMate is an Android chat app for clubs and communities. It is written in Kotl
 
 ## Environment notes
 - Claude Code cloud containers have no `/dev/kvm` and block `dl.google.com`, so the Android SDK and emulator can't be installed there. Build and run on a local machine with Android Studio.
+- Google Maven is blocked in the cloud container too, so the full Android build can't run there. UI that should be tested there goes in pure-Compose files with no Android APIs, like `auth/AuthComponents.kt`. Those files are compiled and screenshot-tested with a Compose Desktop 1.5.12 harness, which only needs Maven Central.
