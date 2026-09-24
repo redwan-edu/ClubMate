@@ -13,3 +13,9 @@
 .externalNativeBuild
 .cxx
 local.properties
+
+# Secrets / keys (kept local only)
+google-services.json
+*.jks
+*.keystore
+.kotlin

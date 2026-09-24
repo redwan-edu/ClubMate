@@ -19,6 +19,6 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "ClubMate"
+rootProject.name = "clubMate"
 include(":app")
  
