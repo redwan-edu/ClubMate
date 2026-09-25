@@ -44,13 +44,6 @@ class Routes {
     )
 
     @Serializable
-    object Chat
-
-    @Serializable
-    object PrivateAuth
-
-
-    @Serializable
     data class PrivateChat(
         val channelId: String,
         val uid: String,
@@ -69,11 +62,7 @@ class Routes {
     )
 
     @Serializable
-    data class CreateGroup(
-        val uid: String = "",
-        val email: String = "",
-        val username: String = "",
-    )
+    object CreateGroup
 
 
     @Serializable
@@ -93,18 +82,6 @@ class Routes {
     )
 
     @Serializable
-    data class Request(
-        val uid: String,
-        var grpId: String
-    )
-
-
-    @Serializable
-    data class RemoveUserFromGroup(
-        val grpId: String
-    )
-
-    @Serializable
     data class ViewAllUser(
         val grpId: String
     )
@@ -114,6 +91,9 @@ class Routes {
         val grpId: String,
         val uid: String
     )
+
+    @Serializable
+    data class NewPost(val grpId: String)
 
     @Serializable
     data class Console(
@@ -126,37 +106,18 @@ class Routes {
 
 
     @Serializable
-    data class ChangeRoles(
-        val grpId: String, val uid: String
-    )
-
-    @Serializable
-    data class Block(
-        val uid: String, val grpId: String
-    )
-
-    @Serializable
     data class GroupUserDetails(
         val grpId: String, val grpName: String = "",
         val userId: String, val currentUserId: String
     )
 
 
-    // nav bars
-    @Serializable
-    object Personalize
-
+    // settings
     @Serializable
     object Accounts
 
     @Serializable
-    object ReportBug
-
-    @Serializable
     object Security
-
-    @Serializable
-    object Setting
 
     @Serializable
     object Developers
@@ -184,13 +145,3 @@ sealed class Status {
     data class Error(val message: String) : Status()
 }
 
-
-// not final
-//data class UserModel(
-//    val email: String = "",
-//    val phone: String = "",
-//    val uid: String = "",
-//    val username: String = "",
-//    val publicKey: String = "",
-//    val encryptedPrivateKey: String = ""
-//)

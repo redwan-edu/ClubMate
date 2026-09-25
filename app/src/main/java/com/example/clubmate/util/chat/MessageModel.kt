@@ -1,6 +1,6 @@
 package com.example.clubmate.util.chat
 
-import com.example.clubmate.screens.MessageStatus
+import com.example.clubmate.util.MessageStatus
 import com.example.clubmate.util.MessageType
 
 

@@ -63,6 +63,8 @@ dependencies {
     implementation(libs.androidx.ui.graphics)
     implementation(libs.androidx.ui.tooling.preview)
     implementation(libs.androidx.material3)
+    // rounded icon set used across the UI (version from the Compose BOM)
+    implementation("androidx.compose.material:material-icons-extended")
 
     implementation(libs.androidx.runtime.livedata)
     implementation(libs.firebase.firestore.ktx)

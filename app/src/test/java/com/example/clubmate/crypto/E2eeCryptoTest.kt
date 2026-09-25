@@ -4,6 +4,8 @@ import com.google.crypto.tink.subtle.X25519
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertTrue
 import org.junit.Assert.assertThrows
 import java.security.GeneralSecurityException
 import org.junit.Test
@@ -185,6 +187,17 @@ class E2eeCryptoTest {
         assertThrows(GeneralSecurityException::class.java) {
             E2eeCrypto.conversationKey(alice, ByteArray(16), bob, bobPub)
         }
+    }
+
+    @Test
+    fun safetyNumberIsTheSameForBothSides() {
+        val fromAlice = E2eeCrypto.safetyNumber(alice, alicePub, bob, bobPub)
+        val fromBob = E2eeCrypto.safetyNumber(bob, bobPub, alice, alicePub)
+        assertEquals(fromAlice, fromBob)
+        assertTrue(Regex("^(\\d{5} ){5}\\d{5}$").matches(fromAlice))
+        // a swapped key gives a different number
+        val evePub = E2eeCrypto.publicKeyOf(E2eeCrypto.generatePrivateKey())
+        assertNotEquals(fromAlice, E2eeCrypto.safetyNumber(alice, alicePub, bob, evePub))
     }
 
     private fun hex(s: String) = ByteArray(s.length / 2) { s.substring(2 * it, 2 * it + 2).toInt(16).toByte() }

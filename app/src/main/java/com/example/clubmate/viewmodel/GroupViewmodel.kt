@@ -17,7 +17,7 @@ import com.example.clubmate.e2ee.E2eeManager
 import com.example.clubmate.e2ee.GroupE2ee
 import com.example.clubmate.e2ee.SecureImages
 import com.example.clubmate.util.Category
-import com.example.clubmate.util.group.EventCategory
+import com.example.clubmate.util.EventCategory
 import com.example.clubmate.util.group.GroupMessage
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.database.ChildEventListener
@@ -91,6 +91,10 @@ class GroupViewmodel : ViewModel() {
     private var eventsRef: DatabaseReference? = null
     private var eventsListener: ValueEventListener? = null
     private var eventsJob: Job? = null
+    private var participantsGrpId: String? = null
+    private var participantsListener: ValueEventListener? = null
+    private var requestsGrpId: String? = null
+    private var requestsListener: ValueEventListener? = null
 
     private val myUid: String? get() = FirebaseAuth.getInstance().uid
 
@@ -454,12 +458,14 @@ class GroupViewmodel : ViewModel() {
     // participants
 
     fun addParticipants(
-        email: String, category: Category = Category.General, grpId: String
+        email: String, category: Category = Category.General, grpId: String,
+        onResult: (Boolean) -> Unit = {}
     ) {
         val joiningTime = System.currentTimeMillis()
 
         // Fetch user details by email
         find(email) { user ->
+            if (user == null) onResult(false)
             user?.let {
                 val userData = UserJoinDetails(
                     email = user.email,
@@ -473,6 +479,7 @@ class GroupViewmodel : ViewModel() {
                 // Add user to group participants
                 grpRef.child(grpId).child("participants").child(user.uid).setValue(userData)
                     .addOnSuccessListener {
+                        onResult(true)
                         // Successfully added to group, now update the user's groups_connected field
                         val userGroupsRef = userRef.child(user.uid).child("groups_connected")
                         userGroupsRef.addListenerForSingleValueEvent(object : ValueEventListener {
@@ -508,13 +515,14 @@ class GroupViewmodel : ViewModel() {
                         })
                     }.addOnFailureListener { error ->
                         Log.d("User joined failed", "addParticipants: ${error.message}")
+                        onResult(false)
                     }
             }
         }
     }
 
 
-    fun removeParticipants(email: String, grpId: String) {
+    fun removeParticipants(email: String, grpId: String, onResult: (Boolean) -> Unit = {}) {
 
         grpRef.child(grpId).child("participants").orderByChild("email").equalTo(email)
             .addListenerForSingleValueEvent(object : ValueEventListener {
@@ -526,6 +534,7 @@ class GroupViewmodel : ViewModel() {
                                     "removeParticipants",
                                     "User removed from group participants successfully"
                                 )
+                                onResult(true)
 
                                 // Now, also remove the user from the user's `groups_connected` list
                                 removeUserFromGroupsConnected(child.key, grpId)
@@ -534,15 +543,18 @@ class GroupViewmodel : ViewModel() {
                                     "removeParticipants",
                                     "Failed to remove user from group participants: ${error.message}"
                                 )
+                                onResult(false)
                             }
                         }
                     } else {
                         Log.d("removeParticipants", "User not found in participants")
+                        onResult(false)
                     }
                 }
 
                 override fun onCancelled(error: DatabaseError) {
                     Log.e("removeParticipants", "Error fetching participants: ${error.message}")
+                    onResult(false)
                 }
             })
     }
@@ -591,9 +603,14 @@ class GroupViewmodel : ViewModel() {
     }
 
 
+    // Continuous listener; calling it again for the same group is a no-op.
     fun getAllParticipants(grpId: String) {
+        if (participantsGrpId == grpId && participantsListener != null) return
+        participantsListener?.let { grpRef.child(participantsGrpId!!).child("participants").removeEventListener(it) }
+        participantsGrpId = grpId
+        _participantsList.value = emptyList()
 
-        grpRef.child(grpId).child("participants") // Access only participants, excluding `admin`
+        participantsListener = grpRef.child(grpId).child("participants")
             .addValueEventListener(object : ValueEventListener {
                 override fun onDataChange(snapshot: DataSnapshot) {
                     if (snapshot.exists()) {
@@ -657,8 +674,14 @@ class GroupViewmodel : ViewModel() {
     private val _requestList = MutableStateFlow<List<RequestMap>>(emptyList())
     val requestList = _requestList
 
+    // Continuous listener; calling it again for the same group is a no-op.
     fun listenToRequest(grpId: String) {
-        grpRef.child(grpId).child("request")
+        if (requestsGrpId == grpId && requestsListener != null) return
+        requestsListener?.let { grpRef.child(requestsGrpId!!).child("request").removeEventListener(it) }
+        requestsGrpId = grpId
+        _requestList.value = emptyList()
+
+        requestsListener = grpRef.child(grpId).child("request")
             .addValueEventListener(object : ValueEventListener {
                 override fun onDataChange(snapshot: DataSnapshot) {
                     val requestList = mutableListOf<RequestMap>()
@@ -1215,6 +1238,8 @@ class GroupViewmodel : ViewModel() {
     override fun onCleared() {
         stopActivities()
         stopEvents()
+        participantsListener?.let { grpRef.child(participantsGrpId!!).child("participants").removeEventListener(it) }
+        requestsListener?.let { grpRef.child(requestsGrpId!!).child("request").removeEventListener(it) }
         super.onCleared()
     }
 

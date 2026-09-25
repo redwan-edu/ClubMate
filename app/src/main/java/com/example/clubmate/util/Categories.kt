@@ -8,3 +8,13 @@ enum class Category {
 enum class MessageType {
     Text, Audio, Video, Image
 }
+
+/** Delivery state of a chat message. */
+enum class MessageStatus {
+    SEEN, DELIVERED, FAILED, SENDING
+}
+
+/** Kinds of posts on a group's notice board. */
+enum class EventCategory {
+    Meeting, Notice, Event
+}

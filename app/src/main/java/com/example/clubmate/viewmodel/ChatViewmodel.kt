@@ -11,7 +11,7 @@ import com.example.clubmate.db.Routes
 import com.example.clubmate.db.UserState
 import com.example.clubmate.e2ee.E2eeManager
 import com.example.clubmate.e2ee.SecureImages
-import com.example.clubmate.screens.MessageStatus
+import com.example.clubmate.util.MessageStatus
 import com.example.clubmate.util.MessageType
 import com.example.clubmate.util.chat.Message
 import com.google.firebase.auth.FirebaseAuth

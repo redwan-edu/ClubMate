@@ -637,6 +637,21 @@ object E2eeManager {
         }
     }
 
+    // ---------------------------------------------------------------- verification
+
+    /** Short fingerprint of this device's identity key for [uid] (shown under Privacy & security). */
+    fun myFingerprint(uid: String): String = E2eeCrypto.fingerprint(identityFor(uid).dhPublic)
+
+    /**
+     * Safety number of the chat between [myUid] and [peerUid]; both people see the same digits.
+     * Null if the contact has not published a key yet.
+     */
+    suspend fun safetyNumber(myUid: String, peerUid: String): String? {
+        val me = identityFor(myUid)
+        val peer = peerKey(peerUid, KeyKind.DH, fresh = true)?.let { decodeKey(it) } ?: return null
+        return E2eeCrypto.safetyNumber(me.uid, me.dhPublic, peerUid, peer)
+    }
+
     // ---------------------------------------------------------------- keys
 
     /** This device's identity for [uid], making sure its public keys are published. */

@@ -130,6 +130,16 @@ verifier = HKDF(master, "channel-verifier" + channelId)
 4. When displayed, the file is downloaded, checked, decrypted and cached in memory
    (`util/SecureImage.kt`). Old unencrypted images still load as before.
 
+## 5a. Checking keys: safety numbers
+
+Because the server is also the key directory, a malicious server operator could hand out a fake
+identity key. Each contact's profile therefore shows a **safety number**
+(`E2eeCrypto.safetyNumber`, shown by `ui/chat/ChatScreens.kt`):
+- It is SHA-256 over a label and both users' IDs and X25519 identity keys, sorted by user ID, so both
+  phones show the same 30 digits (six groups of five).
+- If the two people compare the digits in person and they match, no key was swapped.
+- **Settings → Privacy and security** also shows the fingerprint of this phone's own identity key.
+
 ## 6. What the server can and can't see
 
 | Server **can't** see | Server **can** see (metadata) |
@@ -199,7 +209,7 @@ stronger protection, restrict it to existing admins.
 
 ## 9. Testing
 
-**Unit tests** in `app/src/test/java/com/example/clubmate/crypto/` (36 tests). Run them with
+**Unit tests** in `app/src/test/java/com/example/clubmate/crypto/` (37 tests). Run them with
 `./gradlew :app:testDebugUnitTest`. They cover:
 - the official test vectors: RFC 7748 (X25519), RFC 8032 (Ed25519) and RFC 7914 (PBKDF2);
 - the Double Ratchet: X3DH agreement, a 300-message conversation, out-of-order and lost messages,
@@ -209,7 +219,8 @@ stronger protection, restrict it to existing admins.
 - byte-for-byte agreement with an independent Python implementation
   (`tools/e2ee_reference/e2ee_reference.py`) for 1:1 messages, X3DH, the first ratchet message, group
   messages, signatures and channel keys;
-- tamper detection, metadata binding, signature forgery, wrong passwords and malformed input.
+- tamper detection, metadata binding, signature forgery, wrong passwords and malformed input;
+- safety numbers being identical on both sides and changing when a key is swapped.
 
 **Multi-device simulation (28 scenarios).** During development the real `E2eeManager`, `GroupE2ee`
 and `ChannelE2ee` code was also run against an in-memory Firebase with several simulated phones. The
@@ -243,8 +254,9 @@ scenarios checked:
   history. The standard next step is Sender Keys or MLS.
 - **Chat history lives on the phone:** because ratchet keys are deleted, a reinstall or a new phone
   can't read earlier 1:1 messages. This is the same trade-off Signal makes.
-- **No safety-number screen yet:** users trust the key directory. Firebase rules must stop users from
-  editing other users' keys, and a malicious *server operator* could still substitute keys.
+- **Safety numbers are checked by hand:** the app shows them but doesn't remember "verified"
+  contacts or warn when a contact's key changes. Until people compare numbers, they trust the key
+  directory, so Firebase rules must stop users from editing other users' keys.
 - **Group membership is server-controlled:** the app trusts the `participants` list when deciding
   who gets the group key, as early WhatsApp and Signal groups did. Rules must restrict who can
   change it.

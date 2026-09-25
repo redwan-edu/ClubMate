@@ -1,11 +1,8 @@
 package com.example.clubmate.viewmodel
 
 // Add these imports
-import android.content.Context
 import android.net.Uri
-import android.os.Build
 import android.util.Log
-import androidx.annotation.RequiresApi
 import androidx.lifecycle.LiveData
 import androidx.lifecycle.MutableLiveData
 import androidx.lifecycle.ViewModel
@@ -72,7 +69,6 @@ class AuthViewModel : ViewModel() {
     }
 
 
-    @RequiresApi(Build.VERSION_CODES.O)
     fun logIn(email: String, password: String) {
 
         if (email.isBlank() || password.isBlank()) {
@@ -108,7 +104,6 @@ class AuthViewModel : ViewModel() {
     }
 
 
-    @RequiresApi(Build.VERSION_CODES.O)
     private fun register2Realtime(
         email: String,
         phone: String,
@@ -138,12 +133,10 @@ class AuthViewModel : ViewModel() {
     }
 
 
-    @RequiresApi(Build.VERSION_CODES.O)
     fun register(
         email: String,
         password: String,
         userName: String,
-        context: Context,
         phone: String,
         onClick: (Boolean) -> Unit
     ) {

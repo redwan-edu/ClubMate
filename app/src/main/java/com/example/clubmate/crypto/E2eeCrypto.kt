@@ -70,6 +70,7 @@ object E2eeCrypto {
     private const val AAD_LABEL = "ClubMate-E2EE-v1-message"
     private const val CONTENT_AAD_LABEL = "ClubMate-E2EE-v1-content"
     private const val SIGNATURE_LABEL = "ClubMate-E2EE-v1-signature"
+    private const val SAFETY_NUMBER_LABEL = "ClubMate-safety-number-v1"
     private const val CHANNEL_KEY_LABEL = "ClubMate-E2EE-v1-channel-key"
     private const val CHANNEL_VERIFIER_LABEL = "ClubMate-E2EE-v1-channel-verifier"
     private const val ATTACHMENT_AAD_LABEL = "ClubMate-E2EE-v1-attachment"
@@ -346,6 +347,27 @@ object E2eeCrypto {
     /** Short human-readable fingerprint of a public key, e.g. for logs or a verification screen. */
     fun fingerprint(publicKey: ByteArray): String =
         sha256(publicKey).take(8).joinToString(" ") { "%02X".format(it) }
+
+    /**
+     * Safety number for a 1:1 chat: 30 digits derived from both users' identity keys. Both people
+     * see the same number (the order of the two users does not matter), so comparing it in person
+     * shows that nobody swapped a key in the directory.
+     */
+    fun safetyNumber(uidA: String, keyA: ByteArray, uidB: String, keyB: ByteArray): String {
+        val (first, second) = if (uidA <= uidB) (uidA to keyA) to (uidB to keyB) else (uidB to keyB) to (uidA to keyA)
+        val hash = sha256(
+            encodeFields(
+                SAFETY_NUMBER_LABEL.toByteArray(Charsets.UTF_8),
+                first.first.toByteArray(Charsets.UTF_8), first.second,
+                second.first.toByteArray(Charsets.UTF_8), second.second
+            )
+        )
+        return (0 until 6).joinToString(" ") { group ->
+            var value = 0L
+            for (i in 0 until 5) value = (value shl 8) or (hash[group * 5 + i].toLong() and 0xff)
+            "%05d".format(value % 100_000)
+        }
+    }
 
     // Visible for tests so known-answer vectors can use a fixed nonce. Never call with a reused nonce.
     internal fun encryptWithNonce(
