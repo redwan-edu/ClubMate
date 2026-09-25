@@ -139,7 +139,16 @@ fun ChatScreen(
     }
 
     DisposableEffect(Unit) {
-        onDispose { chatViewmodel.clearMessage() }
+        onDispose { chatViewmodel.clearMessage(chatId = userModel.chatID) }
+    }
+
+    // messages are never sent unencrypted: tell the user when encryption wasn't possible
+    val sendError by chatViewmodel.sendError.collectAsState()
+    LaunchedEffect(sendError) {
+        sendError?.let {
+            launchToast(context, it)
+            chatViewmodel.clearSendError()
+        }
     }
 
 
@@ -345,7 +354,7 @@ fun ChatScreen(
                                         val sentMessage = text.trim()
                                         if (sentMessage.isNotEmpty()) {
                                             if (incognito) {
-                                                mainViewmodel.sendIncognitoMessage(
+                                                chatViewmodel.sendIncognitoMessage(
                                                     chatId = userModel.chatID,
                                                     messageText = sentMessage,
                                                     senderId = uid,

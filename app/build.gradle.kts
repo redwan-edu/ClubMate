@@ -96,8 +96,8 @@ dependencies {
 
     // appwrite
     implementation("io.appwrite:sdk-for-android:6.0.0")
-    // secutiy
-    implementation("androidx.security:security-crypto:1.1.0-alpha06")
+    // end-to-end encryption (X25519 + HKDF)
+    implementation("com.google.crypto.tink:tink-android:1.23.0")
 
     // cloudinary
     implementation("com.cloudinary:cloudinary-android:2.0.0")

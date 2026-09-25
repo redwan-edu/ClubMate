@@ -11,6 +11,7 @@ import com.cloudinary.android.MediaManager
 import com.cloudinary.android.callback.ErrorInfo
 import com.example.clubmate.db.Routes
 import com.example.clubmate.db.UserState
+import com.example.clubmate.e2ee.E2eeManager
 import com.example.clubmate.screens.MessageStatus
 import com.example.clubmate.util.MessageType
 import com.example.clubmate.util.chat.Message
@@ -18,9 +19,9 @@ import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.database.ChildEventListener
 import com.google.firebase.database.DataSnapshot
 import com.google.firebase.database.DatabaseError
+import com.google.firebase.database.DatabaseReference
 import com.google.firebase.database.FirebaseDatabase
 import com.google.firebase.database.ValueEventListener
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -39,14 +40,6 @@ open class ChatViewModel : ViewModel() {
     private val userRef = _db.getReference("user")
     private val receiverId = FirebaseAuth.getInstance().uid
 
-    private var chatJob: Job? = null
-
-    init {
-        chatJob = viewModelScope.launch(Dispatchers.IO) {
-            listenForChats()
-        }
-    }
-
     // message list
     private val _messages = MutableStateFlow<List<Message>>(emptyList())
     val messages: StateFlow<List<Message>> = _messages
@@ -58,6 +51,25 @@ open class ChatViewModel : ViewModel() {
     // chats lists
     private val _chats = MutableStateFlow<List<Chats>>(emptyList())
     val chats: StateFlow<List<Chats>> = _chats
+
+    // set when a message could not be encrypted/sent; the chat screen shows it as a toast
+    private val _sendError = MutableStateFlow<String?>(null)
+    val sendError: StateFlow<String?> = _sendError
+
+    // active Firebase listeners, so they can be detached when a chat is closed
+    private var chatsListener: ChildEventListener? = null
+    private val lastMessageListeners = mutableMapOf<String, ValueEventListener>()
+    private var activeChatId: String? = null
+    private var messagesRef: DatabaseReference? = null
+    private var messagesListener: ChildEventListener? = null
+    private var incognitoRef: DatabaseReference? = null
+    private var incognitoListener: ValueEventListener? = null
+    private var incognitoJob: Job? = null
+
+    // must stay below the properties above, which listenForChats() uses
+    init {
+        listenForChats()
+    }
 
     // userdata
     var userState by mutableStateOf<UserState>(UserState.Success(null))
@@ -178,8 +190,7 @@ open class ChatViewModel : ViewModel() {
                         messageType = MessageType.Image,
                         status = MessageStatus.SENDING
                     )
-                    saveMessageToDatabase(chatId, messageId, messageData)
-                    updateLastMessage(chatId, messageData)
+                    viewModelScope.launch { sendEncrypted(chatId, messageData) }
                 }
             } else {
                 val messageData = Message(
@@ -192,12 +203,27 @@ open class ChatViewModel : ViewModel() {
                     messageType = MessageType.Text,
                     status = MessageStatus.SENDING
                 )
-                saveMessageToDatabase(chatId, messageId, messageData)
-                updateLastMessage(chatId, messageData)
-
+                sendEncrypted(chatId, messageData)
             }
 
         }
+    }
+
+    // Only the encrypted copy ever reaches Firebase; nothing is sent if encryption fails.
+    private suspend fun sendEncrypted(chatId: String, messageData: Message) {
+        val sealed = try {
+            E2eeManager.sealMessage(chatId, messageData)
+        } catch (e: E2eeManager.E2eeException) {
+            Log.e("E2EE", "Message not sent: ${e.message}")
+            _sendError.value = e.message
+            return
+        }
+        saveMessageToDatabase(chatId, sealed.messageId, sealed)
+        updateLastMessage(chatId, sealed)
+    }
+
+    fun clearSendError() {
+        _sendError.value = null
     }
 
     private fun saveMessageToDatabase(
@@ -255,78 +281,72 @@ open class ChatViewModel : ViewModel() {
     fun receiveMessage(chatId: String?) {
 
         if (chatId.isNullOrEmpty()) return
+        val myUid = FirebaseAuth.getInstance().uid ?: return
 
-        chatRef.child(chatId).get().addOnSuccessListener { snapshot ->
-            if (snapshot.exists()) {
-                chatRef.child(chatId).child("messages")
-                    .addChildEventListener(object : ChildEventListener {
-                        override fun onChildAdded(
-                            snapshot: DataSnapshot, previousChildName: String?
-                        ) {
-                            val message = snapshot.getValue(Message::class.java)
-                            message?.let { it1 ->
-                                //notification
-                                val updMsg = it1.copy(messageText = it1.messageText)
-                                val updatedMessages = _messages.value.toMutableList()
-                                if (updatedMessages.none { existingMessage ->
-                                        existingMessage.timestamp == updMsg.timestamp
-                                    }) {
-                                    updatedMessages.add(updMsg)
-                                    _messages.value = updatedMessages
-                                }
-                            }
-                        }
+        // Only one chat is open at a time: detach the previous chat's listener first.
+        stopReceivingMessages()
+        activeChatId = chatId
+        chatId.split("+").firstOrNull { it != myUid }?.let { E2eeManager.watchPeer(it) }
 
-                        override fun onChildChanged(
-                            snapshot: DataSnapshot, previousChildName: String?
-                        ) {
-                            val updatedMessage = snapshot.getValue(Message::class.java)
-                            updatedMessage?.let {
-                                val newMessage = it.copy(messageText = it.messageText)
-
-                                val messagesList = _messages.value.toMutableList()
-                                val index = messagesList.indexOfFirst { ind ->
-                                    ind.timestamp == newMessage.timestamp
-                                }
-                                if (index >= 0) {
-                                    messagesList[index] = newMessage
-                                    _messages.value = messagesList
-
-                                }
-                            }
-                        }
-
-                        override fun onChildRemoved(snapshot: DataSnapshot) {
-                            val removedMessage = snapshot.getValue(Message::class.java)
-                            removedMessage?.let {
-                                val messagesList = _messages.value.toMutableList()
-
-                                messagesList.removeIf { message ->
-                                    message.timestamp == removedMessage.timestamp
-                                }
-                                _messages.value = messagesList
-
-                            }
-                        }
-
-                        override fun onChildMoved(
-                            snapshot: DataSnapshot, previousChildName: String?
-                        ) {
-                            Log.d("TAG", "onChildMoved: ")
-                        }
-
-                        override fun onCancelled(error: DatabaseError) {
-                            Log.d("TAG", "onChildMoved: ")
-                        }
-
-                    })
+        val ref = chatRef.child(chatId).child("messages")
+        val listener = object : ChildEventListener {
+            override fun onChildAdded(snapshot: DataSnapshot, previousChildName: String?) {
+                showMessage(chatId, snapshot, myUid)
             }
-        }.addOnFailureListener {
-            Log.e(
-                "Message", "Error receiving  message"
-            )
-        }
 
+            override fun onChildChanged(snapshot: DataSnapshot, previousChildName: String?) {
+                showMessage(chatId, snapshot, myUid)
+            }
+
+            override fun onChildRemoved(snapshot: DataSnapshot) {
+                val removedId = snapshot.key ?: return
+                _messages.value = _messages.value.filterNot { it.messageId == removedId }
+            }
+
+            override fun onChildMoved(snapshot: DataSnapshot, previousChildName: String?) {
+                Log.d("TAG", "onChildMoved: ")
+            }
+
+            override fun onCancelled(error: DatabaseError) {
+                Log.e("Message", "Error receiving message: ${error.message}")
+            }
+        }
+        messagesRef = ref
+        messagesListener = listener
+        ref.addChildEventListener(listener)
+    }
+
+    // Decrypts a message from Firebase and inserts/replaces it in the list (kept in time order).
+    private fun showMessage(chatId: String, snapshot: DataSnapshot, myUid: String) {
+        val raw = try {
+            snapshot.getValue(Message::class.java)
+        } catch (e: Exception) {
+            Log.e("Message", "Malformed message ${snapshot.key}", e)
+            null
+        } ?: return
+        val message = raw.copy(messageId = raw.messageId.ifEmpty { snapshot.key.orEmpty() })
+
+        viewModelScope.launch {
+            val shown = E2eeManager.openMessage(chatId, message, myUid)
+            if (activeChatId != chatId) return@launch // user left this chat meanwhile
+
+            val list = _messages.value.toMutableList()
+            val index = list.indexOfFirst { it.messageId == shown.messageId }
+            if (index >= 0) {
+                list[index] = shown
+            } else {
+                list.add(shown)
+                list.sortBy { it.timestamp }
+            }
+            _messages.value = list
+        }
+    }
+
+    private fun stopReceivingMessages() {
+        messagesListener?.let { listener -> messagesRef?.removeEventListener(listener) }
+        messagesListener = null
+        messagesRef = null
+        activeChatId = null
     }
 
 
@@ -335,102 +355,68 @@ open class ChatViewModel : ViewModel() {
         return sdf.format(Date(timestamp))
     }
 
-    fun clearMessage() {
+    // chatId: the chat being closed. If another chat was opened in the meantime, keep that one alive.
+    fun clearMessage(chatId: String? = null) {
+        if (chatId != null && activeChatId != null && activeChatId != chatId) return
+        stopReceivingMessages()
+        stopReceivingIncognito()
         _messages.value = emptyList()
     }
 
     private fun listenForChats() {
-        receiverId?.let {
-            chatRef.addChildEventListener(object : ChildEventListener {
-                override fun onChildAdded(snapshot: DataSnapshot, previousChildName: String?) {
-                    val chatId = snapshot.key
-                    if (chatId != null && chatId.contains(receiverId)) {
-                        val participants = chatId.split("+")
+        val myUid = receiverId ?: return
 
-                        if (participants.contains(receiverId)) {
-                            val newChat = Chats(chatId = chatId)
-                            val existingChat = _chats.value.find { it.chatId == chatId }
+        val listener = object : ChildEventListener {
+            override fun onChildAdded(snapshot: DataSnapshot, previousChildName: String?) {
+                val chatId = snapshot.key ?: return
+                if (!isMyChat(chatId, myUid)) return
 
-
-                            getLastMessage(chatId) { lstMsg ->
-                                lstMsg?.let { newChat.lastMessage = it }
-                            }
-
-                            getParticipants(chatId) { prt ->
-                                newChat.participants = prt
-                            }
-
-                            if (existingChat == null || existingChat != newChat) {
-                                val updatedChats = _chats.value.toMutableList()
-                                if (existingChat != null) {
-                                    val index = updatedChats.indexOfFirst { it.chatId == chatId }
-                                    updatedChats[index] = newChat
-                                } else {
-                                    updatedChats.add(newChat)
-                                }
-                                _chats.value = updatedChats.sortedByDescending {
-                                    it.lastMessage?.timestamp
-                                }
-
-                            }
-                        }
-                    }
+                if (_chats.value.none { it.chatId == chatId }) {
+                    _chats.value = _chats.value + Chats(chatId = chatId)
                 }
-
-
-                override fun onChildChanged(snapshot: DataSnapshot, previousChildName: String?) {
-                    val chatId = snapshot.key
-                    if (chatId != null && chatId.contains(receiverId)) {
-                        val participants = chatId.split("+")
-
-                        if (participants.size == 2 && participants.contains(receiverId)) {
-                            val updatedChat = Chats(chatId = chatId)
-                            val existingChat = _chats.value.find { it.chatId == chatId }
-
-                            getLastMessage(chatId) { lstMsg ->
-                                lstMsg?.let { updatedChat.lastMessage = it }
-                                getParticipants(chatId) { prt ->
-                                    updatedChat.participants = prt
-                                }
-                            }
-                            if (existingChat != updatedChat) {
-                                // Only update if there's an actual change
-                                val updatedChats = _chats.value.toMutableList()
-                                val index = updatedChats.indexOfFirst { it.chatId == chatId }
-                                if (index >= 0) {
-                                    updatedChats[index] = updatedChat
-                                    _chats.value = updatedChats
-                                }
-                            }
-                        }
-                    }
+                getParticipants(chatId) { prt ->
+                    updateChat(chatId) { it.copy(participants = prt) }
                 }
+                watchLastMessage(chatId, myUid)
+            }
 
-                override fun onChildRemoved(snapshot: DataSnapshot) {
-                    val chatId = snapshot.key
-                    if (chatId != null) {
-                        // Remove the chat from the list
-                        val updatedChats = _chats.value.toMutableList()
-                        val index = updatedChats.indexOfFirst { it.chatId == chatId }
-
-                        if (index >= 0) {
-                            updatedChats.removeAt(index)
-                            _chats.value = updatedChats
-                        }
-                    }
+            override fun onChildChanged(snapshot: DataSnapshot, previousChildName: String?) {
+                // the last message has its own listener; only participants need refreshing here
+                val chatId = snapshot.key ?: return
+                if (!isMyChat(chatId, myUid)) return
+                getParticipants(chatId) { prt ->
+                    updateChat(chatId) { it.copy(participants = prt) }
                 }
+            }
 
-                override fun onChildMoved(snapshot: DataSnapshot, previousChildName: String?) {}
-
-                override fun onCancelled(error: DatabaseError) {
-                    Log.e("ChatListener", "Error listening for chats: ${error.message}")
+            override fun onChildRemoved(snapshot: DataSnapshot) {
+                val chatId = snapshot.key ?: return
+                lastMessageListeners.remove(chatId)?.let { listener ->
+                    chatRef.child(chatId).child("msg").child("last").removeEventListener(listener)
                 }
-            })
+                _chats.value = _chats.value.filterNot { it.chatId == chatId }
+            }
+
+            override fun onChildMoved(snapshot: DataSnapshot, previousChildName: String?) {}
+
+            override fun onCancelled(error: DatabaseError) {
+                Log.e("ChatListener", "Error listening for chats: ${error.message}")
+            }
         }
-
-
+        chatsListener = listener
+        chatRef.addChildEventListener(listener)
     }
 
+    private fun isMyChat(chatId: String, myUid: String): Boolean {
+        val participants = chatId.split("+")
+        return participants.size == 2 && participants.contains(myUid)
+    }
+
+    private fun updateChat(chatId: String, transform: (Chats) -> Chats) {
+        _chats.value = _chats.value
+            .map { if (it.chatId == chatId) transform(it) else it }
+            .sortedByDescending { it.lastMessage?.timestamp }
+    }
 
     fun getParticipants(
         chatId: String, onResult: (List<Routes.UserModel>) -> Unit
@@ -457,26 +443,35 @@ open class ChatViewModel : ViewModel() {
             })
     }
 
-    private fun getLastMessage(chatId: String, onResult: (Message?) -> Unit) {
+    // Keeps the chat list preview in sync with chat/{chatId}/msg/last, decrypted for display.
+    private fun watchLastMessage(chatId: String, myUid: String) {
+        if (lastMessageListeners.containsKey(chatId)) return
 
-        chatRef.child(chatId).child("msg").child("last")
-            .addValueEventListener(object : ValueEventListener {
-                override fun onDataChange(snapshot: DataSnapshot) {
-                    if (snapshot.exists()) {
-                        val lastMsg = snapshot.getValue(Message::class.java)
-                        onResult(lastMsg)
-                    } else {
-                        onResult(null)
-                    }
+        val listener = object : ValueEventListener {
+            override fun onDataChange(snapshot: DataSnapshot) {
+                val lastMsg = try {
+                    snapshot.getValue(Message::class.java)
+                } catch (e: Exception) {
+                    Log.e("getLastMessage", "Malformed last message in $chatId", e)
+                    null
                 }
+                if (lastMsg == null) {
+                    updateChat(chatId) { it.copy(lastMessage = Message()) }
+                    return
+                }
+                viewModelScope.launch {
+                    val shown = E2eeManager.openMessage(chatId, lastMsg, myUid)
+                    updateChat(chatId) { it.copy(lastMessage = shown) }
+                }
+            }
 
-                override fun onCancelled(error: DatabaseError) {
-                    Log.e("getLastMessage", "Error fetching last message: ${error.message}")
-                    onResult(null)
-                }
-            })
+            override fun onCancelled(error: DatabaseError) {
+                Log.e("getLastMessage", "Error fetching last message: ${error.message}")
+            }
+        }
+        lastMessageListeners[chatId] = listener
+        chatRef.child(chatId).child("msg").child("last").addValueEventListener(listener)
     }
-
 
     // find user section
 
@@ -656,7 +651,7 @@ open class ChatViewModel : ViewModel() {
         senderId: String,
         messageText: String
     ) {
-        val messageId = chatRef.child(chatId).child("incognito").push().key ?: ""
+        val messageId = chatRef.child(chatId).child("incognito").push().key ?: return
         val timestamp = System.currentTimeMillis()
 
         val messageData = IncognitoMessage(
@@ -667,32 +662,76 @@ open class ChatViewModel : ViewModel() {
             messageId = messageId
         )
 
-        chatRef.child(chatId).child("incognito").child(messageId).setValue(messageData)
-            .addOnSuccessListener {
-                Log.d("Success", "Activity added successfully")
-            }.addOnFailureListener { e ->
-                Log.e("Failure", "Failed to add activity: ${e.message}")
+        viewModelScope.launch {
+            val sealed = try {
+                E2eeManager.sealIncognito(chatId, messageData)
+            } catch (e: E2eeManager.E2eeException) {
+                Log.e("E2EE", "Incognito message not sent: ${e.message}")
+                _sendError.value = e.message
+                return@launch
             }
+            chatRef.child(chatId).child("incognito").child(messageId).setValue(sealed)
+                .addOnSuccessListener {
+                    Log.d("Success", "Activity added successfully")
+                }.addOnFailureListener { e ->
+                    Log.e("Failure", "Failed to add activity: ${e.message}")
+                }
+        }
     }
 
 
     fun receiveIncognitoMessage(chatId: String) {
-        chatRef.child(chatId).child("incognito")
-            .addValueEventListener(object : ValueEventListener {
-                override fun onDataChange(snapshot: DataSnapshot) {
-                    val messages = mutableListOf<IncognitoMessage>()
-                    for (childSnapshot in snapshot.children) {
+        val myUid = FirebaseAuth.getInstance().uid ?: return
+        stopReceivingIncognito()
+
+        val ref = chatRef.child(chatId).child("incognito")
+        val listener = object : ValueEventListener {
+            override fun onDataChange(snapshot: DataSnapshot) {
+                val messages = mutableListOf<IncognitoMessage>()
+                for (childSnapshot in snapshot.children) {
+                    try {
                         childSnapshot.getValue(IncognitoMessage::class.java)?.let {
                             messages.add(it)
                         }
+                    } catch (e: Exception) {
+                        Log.e("Incognito", "Malformed message ${childSnapshot.key}", e)
                     }
-                    _incognitoMessages.value = messages.sortedBy { it.timestamp }
                 }
+                // each snapshot is the full list, so only the newest decryption run matters
+                incognitoJob?.cancel()
+                incognitoJob = viewModelScope.launch {
+                    _incognitoMessages.value = messages
+                        .map { E2eeManager.openIncognito(chatId, it, myUid) }
+                        .sortedBy { it.timestamp }
+                }
+            }
 
-                override fun onCancelled(error: DatabaseError) {
-                    Log.d("TAG", "onCancelled: error")
-                }
-            })
+            override fun onCancelled(error: DatabaseError) {
+                Log.d("TAG", "onCancelled: error")
+            }
+        }
+        incognitoRef = ref
+        incognitoListener = listener
+        ref.addValueEventListener(listener)
+    }
+
+    private fun stopReceivingIncognito() {
+        incognitoListener?.let { listener -> incognitoRef?.removeEventListener(listener) }
+        incognitoListener = null
+        incognitoRef = null
+        incognitoJob?.cancel()
+        incognitoJob = null
+    }
+
+    override fun onCleared() {
+        stopReceivingMessages()
+        stopReceivingIncognito()
+        chatsListener?.let { chatRef.removeEventListener(it) }
+        lastMessageListeners.forEach { (chatId, listener) ->
+            chatRef.child(chatId).child("msg").child("last").removeEventListener(listener)
+        }
+        lastMessageListeners.clear()
+        super.onCleared()
     }
 
     fun deleteIncognitoMessage(chatId: String) {
@@ -712,7 +751,12 @@ data class IncognitoMessage(
     val senderId: String = "",
     val receiverId: String = "",
     val timestamp: Long = 0L,
-    val messageId: String = ""
+    val messageId: String = "",
+    // end-to-end encryption, same format as Message
+    val v: Int = 0,
+    val ct: String = "",
+    val senderKey: String = "",
+    val receiverKey: String = ""
 )
 
 

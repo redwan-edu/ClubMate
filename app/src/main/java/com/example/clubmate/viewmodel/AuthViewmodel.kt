@@ -11,9 +11,9 @@ import androidx.lifecycle.MutableLiveData
 import androidx.lifecycle.ViewModel
 import com.cloudinary.android.MediaManager
 import com.cloudinary.android.callback.ErrorInfo
-import com.example.clubmate.crypto_manager.CryptoManager
 import com.example.clubmate.db.Routes
 import com.example.clubmate.db.Status
+import com.example.clubmate.e2ee.E2eeManager
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.FirebaseUser
 import com.google.firebase.database.DataSnapshot
@@ -58,6 +58,7 @@ class AuthViewModel : ViewModel() {
         val currentUser = _currentUser.value
         if (currentUser != null) {
             if (currentUser.isEmailVerified) {
+                E2eeManager.onSignedIn(currentUser.uid)
                 _authState.value = Status.Authenticated
                 fetchUserData(currentUser.uid) { userData ->
                     _userData.value = userData
@@ -86,27 +87,8 @@ class AuthViewModel : ViewModel() {
                     val curUser = _auth.currentUser
                     if (curUser != null) {
                         if (curUser.isEmailVerified) {
-
-                            userRef.child(curUser.uid).get()
-                                .addOnSuccessListener { snap ->
-                                    val encryptedPrivateKey =
-                                        snap.child("encryptedPrivateKey").value as? String
-
-                                    if (!encryptedPrivateKey.isNullOrBlank()) {
-                                        // Decrypt and store private key in Keystore
-                                        Log.d(
-                                            "CryptoManager",
-                                            "Private key successfully restored in Keystore"
-                                        )
-                                        _authState.value = Status.Authenticated
-                                        _currentUser.value = _auth.currentUser
-                                    } else {
-                                        Log.e("CryptoManager", "No encrypted private key found")
-                                    }
-                                }.addOnFailureListener { exception ->
-                                    _authState.value =
-                                        Status.Error("Failed to retrieve private key: ${exception.message}")
-                                }
+                            // make sure this device has an E2EE key pair and its public key is published
+                            E2eeManager.onSignedIn(curUser.uid)
 
                             _authState.value = Status.Authenticated
                             _currentUser.value = _auth.currentUser
@@ -132,20 +114,14 @@ class AuthViewModel : ViewModel() {
         phone: String,
         userName: String,
         uid: String,
-        context: Context,
-        password: String,
         onSuccess: () -> Unit
     ) {
-        // Generate RSA Key Pair
-        val keyPair =
-            CryptoManager.getBothKeys(userUID = uid, password = password, context = context)
-
+        // Public half of this device's X25519 key pair; the private half never leaves the device.
         val userData = Routes.UserModel(
             username = userName,
             phone = phone, email = email,
             uid = uid,
-            encryptedPrivateKey = keyPair.second,
-            publicKey = keyPair.first
+            publicKey = E2eeManager.publicKeyFor(uid)
         )
 
 
@@ -195,9 +171,9 @@ class AuthViewModel : ViewModel() {
                     user?.sendEmailVerification()?.addOnCompleteListener { emailTask ->
                         if (emailTask.isSuccessful) {
                             register2Realtime(
-                                context = context, email = email,
+                                email = email,
                                 phone = phone, userName = userName,
-                                uid = user.uid, password = password
+                                uid = user.uid
                             ) {
                                 _currentUser.value = user
                                 onClick(true)
@@ -278,6 +254,7 @@ class AuthViewModel : ViewModel() {
 
 
     fun signOut() {
+        E2eeManager.onSignedOut()
         _auth.signOut()
         _userData.value = null
         _currentUser.value = null
