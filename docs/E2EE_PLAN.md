@@ -1,6 +1,6 @@
 # ClubMate: End-to-End Encryption Plan
 
-Status: **basic Diffie-Hellman mode implemented** for 1:1 chats, groups and private channels, including images (see [`E2EE_IMPLEMENTATION.md`](E2EE_IMPLEMENTATION.md)). The ratchet sections below are the next step. This document describes how to move ClubMate's
+Status: **implemented.** 1:1 chats use X3DH + the Double Ratchet described below. Groups and private channels use the basic Diffie-Hellman mode, and images are encrypted everywhere. See [`E2EE_IMPLEMENTATION.md`](E2EE_IMPLEMENTATION.md). Differences from this plan: there are no one-time prekeys (X3DH's optional part), and decrypted history lives in an encrypted file store rather than Room. This document describes how to move ClubMate's
 1:1 chats to end-to-end encryption (E2EE) using **X3DH + the Double Ratchet** (the design Signal and
 WhatsApp use), and how to switch it on and migrate existing data safely.
 

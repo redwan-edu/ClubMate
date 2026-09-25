@@ -4,15 +4,15 @@ End-to-end encryption covers every place people write content in ClubMate:
 
 | Feature | Message text | Images | Previews | How the key is agreed |
 |---|---|---|---|---|
-| 1:1 chats (+ incognito) | ✅ | ✅ | ✅ chat list | X25519 Diffie-Hellman between the two users |
+| 1:1 chats (+ incognito) | ✅ | ✅ | ✅ chat list | **X3DH + Double Ratchet** (forward secrecy + post-compromise security) |
 | Groups (chat + notice board) | ✅ | ✅ | ✅ group list | random group key, handed to each member via their Diffie-Hellman key, rotated on membership change |
 | Private channels | ✅ | ✅ | n/a | derived from the channel password (PBKDF2 + HKDF) |
 
 Firebase and Cloudinary only ever store ciphertext for these. Group and channel messages are also
 **signed** (Ed25519), so a member can't post in someone else's name.
 
-This is the "basic Diffie-Hellman mode" step of [`E2EE_PLAN.md`](E2EE_PLAN.md). The Double Ratchet
-(forward secrecy) is the next step.
+1:1 chats use the **Double Ratchet** as planned in [`E2EE_PLAN.md`](E2EE_PLAN.md). Groups and
+channels use the "basic Diffie-Hellman mode" described below.
 
 ---
 
@@ -25,20 +25,59 @@ excluded from backups. The public halves are published in the user's Firebase no
 | Key | Algorithm | Firebase field | Used for |
 |---|---|---|---|
 | Key-exchange key | X25519 | `user/{uid}/publicKey` | Diffie-Hellman for 1:1 messages and for handing out group keys |
-| Signing key | Ed25519 | `user/{uid}/signingKey` | signing group and channel messages |
+| Signing key | Ed25519 | `user/{uid}/signingKey` | signing group and channel messages, and the signed prekey |
+| Signed prekey | X25519, signed with the signing key | `user/{uid}/signedPreKey` = `{id, key, sig}` | starting 1:1 sessions (X3DH). Rotated weekly, with the last 4 kept |
 
 **Trust rule:** a contact's key is accepted only if the directory (`user/{uid}`) shows or showed it
 for that contact. A key that appears only inside a message is rejected.
 
-## 2. 1:1 chats
+## 2. 1:1 chats: X3DH + Double Ratchet (`crypto/DoubleRatchet.kt`, `e2ee/RatchetSessions.kt`)
 
+**Starting a session (X3DH, Signal spec, without one-time prekeys).** Alice fetches Bob's identity key
+`IK_B` and signed prekey `SPK_B`, and checks the prekey's signature with Bob's signing key. She then
+makes an ephemeral key `EK_A` and computes:
 ```
-shared = X25519(my private key, their public key)        (same value on both phones, never sent)
-key    = HKDF-SHA256(shared, info = both uids + both public keys)
-ct     = AES-256-GCM(key, random nonce, content, AAD)
+SK = HKDF(0xFF*32 ‖ DH(IK_A, SPK_B) ‖ DH(EK_A, IK_B) ‖ DH(EK_A, SPK_B))
 ```
-The AAD (associated data) binds each ciphertext to its chat, message ID, sender, receiver, type,
-timestamp and both public keys, so the server can't move, re-attribute, re-date or alter it.
+Until Bob replies, her messages carry `preIk`/`preEk`/`preSpk`, so Bob can compute the same `SK`.
+Bob only accepts `IK_A` if the directory lists it for Alice.
+
+**Double Ratchet (Signal spec).**
+- **Symmetric-key ratchet:** every message gets its own key from a KDF chain (HMAC-SHA256), and the
+  key is deleted after use. This gives **forward secrecy**.
+- **Diffie-Hellman ratchet:** a fresh X25519 exchange (HKDF-SHA256 root chain) happens each time the
+  conversation changes direction. This gives **post-compromise security**: after a key theft, the
+  attacker is locked out again after the next round trip.
+- Out-of-order and lost messages are handled with stored skipped keys (at most 1000 per chain).
+  Replays fail, because the key is gone.
+- Each message key produces the AES-256-GCM key and nonce. The AAD covers the session's identities,
+  the ratchet header and the message metadata (chat, message ID, sender, receiver, type, timestamp,
+  normal or incognito).
+
+**Wire format** (`chat/{chatId}/messages/{id}`): `v: 2`, `ct`, header `dh`/`pn`/`n`, and on first
+messages `preIk`/`preEk`/`preSpk`. `messageText` and `imageRef` are always empty.
+
+**On-device store.** A ratchet message can only be decrypted once, so decrypted text is kept on the
+phone in an encrypted per-chat file:
+- It is encrypted with AES-256-GCM using a random key protected by the Android Keystore.
+- It lives in `noBackupFilesDir`, so it is never in cloud backups.
+- Writes are atomic.
+
+Senders keep their own text the same way, since they can't decrypt their own ciphertext. Each stored
+text is tied to a hash of its message's metadata, so the server can't re-show it with another
+timestamp, in another chat, or as incognito/normal.
+
+**Safety rules in the code:**
+- Every chat has a lock.
+- A sending step is saved to disk *before* the message leaves the phone. A crash therefore can never
+  make the app reuse a message key.
+- A message that fails to decrypt never changes the session.
+- If either side reinstalls, which changes the identity key, a new session starts automatically.
+- If both sides start a session at the same moment, they converge, following Signal's rule.
+
+**Incognito** messages use the same session, but their text is only kept in memory.
+
+Messages from the earlier static-key version (`v: 1`) can still be read.
 
 ## 3. Groups (`e2ee/GroupE2ee.kt`)
 
@@ -95,7 +134,7 @@ verifier = HKDF(master, "channel-verifier" + channelId)
 
 | Server **can't** see | Server **can** see (metadata) |
 |---|---|
-| message text, notice title and body, image contents and links | who is in which chat, group or channel; timestamps; message sizes; seen flags |
+| message text, notice title and body, image contents and links | who is in which chat, group or channel; timestamps; message sizes; seen flags; ratchet headers (public keys and counters) |
 | channel passwords | group name, description, photo and member list (needed for search and joining) |
 | private keys, group keys | public keys |
 
@@ -150,7 +189,9 @@ stronger protection, restrict it to existing admins.
 |---|---|
 | `crypto/E2eeCrypto.kt` | Pure crypto (no Android): X25519, Ed25519, HKDF, PBKDF2, AES-GCM, AAD encoding. |
 | `e2ee/KeyVault.kt` | Keystore-wrapped private keys and remembered contact keys. |
-| `e2ee/E2eeManager.kt` | Key publishing and lookup, 1:1 sealing, shared signed-sealing helpers. |
+| `crypto/DoubleRatchet.kt` | X3DH and the Double Ratchet (pure Kotlin, tested). |
+| `e2ee/RatchetSessions.kt`, `ChatStore.kt`, `RatchetStore.kt` | Sessions, the encrypted on-device message store, and atomic files. |
+| `e2ee/E2eeManager.kt` | Key and prekey publishing and lookup, 1:1 sealing, shared signed-sealing helpers. |
 | `e2ee/GroupE2ee.kt` | Group keys (epochs, rotation), group messages and notices. |
 | `e2ee/ChannelE2ee.kt` | Password-derived channel keys, legacy upgrade, channel messages. |
 | `e2ee/SecureImages.kt`, `util/SecureImage.kt` | Encrypted image upload, download and display. |
@@ -158,17 +199,25 @@ stronger protection, restrict it to existing admins.
 
 ## 9. Testing
 
-**Unit tests** in `app/src/test/java/com/example/clubmate/crypto/` (25 tests). Run them with
+**Unit tests** in `app/src/test/java/com/example/clubmate/crypto/` (36 tests). Run them with
 `./gradlew :app:testDebugUnitTest`. They cover:
 - the official test vectors: RFC 7748 (X25519), RFC 8032 (Ed25519) and RFC 7914 (PBKDF2);
+- the Double Ratchet: X3DH agreement, a 300-message conversation, out-of-order and lost messages,
+  replay and tamper rejection without damaging the session, the MAX_SKIP limit, **forward secrecy**
+  (stolen state can't read old messages), **post-compromise security** (a copied state is locked out
+  after a round trip), and state persistence;
 - byte-for-byte agreement with an independent Python implementation
-  (`tools/e2ee_reference/e2ee_reference.py`) for 1:1 messages, group messages, signatures and channel
-  keys;
+  (`tools/e2ee_reference/e2ee_reference.py`) for 1:1 messages, X3DH, the first ratchet message, group
+  messages, signatures and channel keys;
 - tamper detection, metadata binding, signature forgery, wrong passwords and malformed input.
 
-**Multi-device simulation (26 scenarios).** During development the real `E2eeManager`, `GroupE2ee`
+**Multi-device simulation (28 scenarios).** During development the real `E2eeManager`, `GroupE2ee`
 and `ChannelE2ee` code was also run against an in-memory Firebase with several simulated phones. The
 scenarios checked:
+- X3DH first messages, the prekey block stopping after the first reply, and ratchet keys changing;
+- simultaneous first messages converging, and out-of-order delivery across app restarts;
+- a reinstall mid-conversation, forged senders, and replayed or re-dated messages;
+- incognito text never persisting;
 - members read group messages and the server sees no text;
 - the group key is reused until membership changes, then rotated;
 - removed members can't read new messages;
@@ -189,8 +238,11 @@ scenarios checked:
 
 ## 10. Limitations (say these in the viva)
 
-- **No forward secrecy:** long-term keys protect stored messages. The Double Ratchet in the plan
-  fixes this.
+- **Forward secrecy only for 1:1 chats:** groups and channels use long-lived keys (a group key
+  until the next membership change, a channel password), so a stolen key exposes their stored
+  history. The standard next step is Sender Keys or MLS.
+- **Chat history lives on the phone:** because ratchet keys are deleted, a reinstall or a new phone
+  can't read earlier 1:1 messages. This is the same trade-off Signal makes.
 - **No safety-number screen yet:** users trust the key directory. Firebase rules must stop users from
   editing other users' keys, and a malicious *server operator* could still substitute keys.
 - **Group membership is server-controlled:** the app trusts the `participants` list when deciding

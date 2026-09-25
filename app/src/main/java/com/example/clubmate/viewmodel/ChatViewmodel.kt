@@ -112,6 +112,7 @@ open class ChatViewModel : ViewModel() {
                 if (participants.contains(uid)) {
                     onSuccess(true)
                     chatRef.child(chatId).removeValue()
+                    viewModelScope.launch { E2eeManager.forgetChat(chatId, uid) }
 
                 } else {
                     onSuccess(false)
@@ -273,6 +274,8 @@ open class ChatViewModel : ViewModel() {
             override fun onChildRemoved(snapshot: DataSnapshot) {
                 val removedId = snapshot.key ?: return
                 _messages.value = _messages.value.filterNot { it.messageId == removedId }
+                // deleted for everyone: also drop the decrypted copy kept on this device
+                viewModelScope.launch { E2eeManager.forgetMessage(chatId, myUid, removedId) }
             }
 
             override fun onChildMoved(snapshot: DataSnapshot, previousChildName: String?) {
@@ -728,7 +731,13 @@ data class IncognitoMessage(
     val v: Int = 0,
     val ct: String = "",
     val senderKey: String = "",
-    val receiverKey: String = ""
+    val receiverKey: String = "",
+    val dh: String = "",
+    val pn: Int = 0,
+    val n: Int = 0,
+    val preIk: String = "",
+    val preEk: String = "",
+    val preSpk: Int = 0
 )
 
 

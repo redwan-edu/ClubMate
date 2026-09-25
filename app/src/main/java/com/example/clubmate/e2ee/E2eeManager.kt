@@ -4,6 +4,8 @@ import android.content.Context
 import android.util.Base64
 import android.util.Log
 import com.example.clubmate.crypto.E2eeCrypto
+import com.example.clubmate.crypto.RatchetHeader
+import com.example.clubmate.crypto.X3dh
 import com.example.clubmate.util.MessageType
 import com.example.clubmate.util.chat.Message
 import com.example.clubmate.viewmodel.IncognitoMessage
@@ -17,12 +19,15 @@ import kotlin.coroutines.resume
 import kotlin.coroutines.suspendCoroutine
 
 /**
- * Glue between the app and [E2eeCrypto]: owns this device's key pairs, publishes the public keys to
- * `user/{uid}` (`publicKey` = X25519, `signingKey` = Ed25519), looks up contacts' public keys, and
- * seals/opens 1:1 chat messages. [GroupE2ee] and [ChannelE2ee] build on the helpers here.
+ * Glue between the app and the crypto code: owns this device's key pairs, publishes the public keys
+ * to `user/{uid}` (`publicKey` = X25519 identity key, `signingKey` = Ed25519, `signedPreKey` = X3DH
+ * prekey signed with the Ed25519 key), looks up contacts' keys, and seals/opens 1:1 chat messages.
+ * [GroupE2ee] and [ChannelE2ee] build on the helpers here.
  *
- * Encrypted 1:1 messages in Firebase carry `v = 1`, the Base64 ciphertext in `ct`, and the two public
- * keys used (`senderKey`, `receiverKey`). The readable fields `messageText` and `imageRef` are always
+ * 1:1 messages (`v = 2`) use X3DH + the Double Ratchet via [RatchetSessions]: `ct` is the
+ * ciphertext, `dh`/`pn`/`n` the ratchet header and `preIk`/`preEk`/`preSpk` the X3DH prekey block of
+ * a session's first messages. Messages from the earlier static-key version (`v = 1`) and plain-text
+ * messages (`v = 0`) can still be read. The readable fields `messageText` and `imageRef` are always
  * stored empty.
  */
 object E2eeManager {
@@ -32,10 +37,20 @@ object E2eeManager {
     const val CONTEXT_CHAT = "chat"
     const val CONTEXT_INCOGNITO = "incognito"
 
+    /** Protocol version of 1:1 messages sent by this app (Double Ratchet). */
+    const val RATCHET_VERSION = 2
+
+    private const val SIGNED_PREKEY_FIELD = "signedPreKey"
+    private const val SIGNED_PREKEY_LIFETIME_MS = 7L * 24 * 60 * 60 * 1000
+    private const val SIGNED_PREKEYS_KEPT = 4
+
     const val TEXT_UNDECRYPTABLE = "🔒 This message can't be decrypted on this device"
     const val TEXT_UNTRUSTED_KEY = "🔒 Message blocked: the sender's key isn't recognised"
     const val TEXT_UNSUPPORTED = "🔒 This message needs a newer version of ClubMate"
     const val TEXT_NO_GROUP_KEY = "🔒 Sent before you joined, or to an old key of yours"
+    const val TEXT_NOT_ON_DEVICE = "🔒 This message is no longer available on this device"
+    const val TEXT_PEER_NEEDS_UPDATE =
+        "Can't send securely yet: the other user needs to sign in to the latest ClubMate first"
     const val NOT_ENCRYPTED_PREFIX = "⚠️ Not encrypted: "
 
     class E2eeException(message: String) : Exception(message)
@@ -90,6 +105,7 @@ object E2eeManager {
     fun init(context: Context) {
         vault = KeyVault(context.applicationContext)
         SecureImages.init(context)
+        RatchetSessions.init(FileStoreBackend(context.applicationContext)) { vault.storageKey() }
     }
 
     /** X25519 public key (Base64) of [uid] on this device; creates the key pairs if needed. */
@@ -111,6 +127,7 @@ object E2eeManager {
         val update = mapOf<String, Any?>(
             KeyKind.DH.field to id.dhPublicB64,
             KeyKind.SIGNING.field to id.signPublicB64,
+            SIGNED_PREKEY_FIELD to signedPreKey(id),
             // Remove the old password-encrypted private key: private keys must never be on the server.
             "encryptedPrivateKey" to null
         )
@@ -138,6 +155,7 @@ object E2eeManager {
         peerWatchers.clear()
         GroupE2ee.onSignedOut()
         ChannelE2ee.onSignedOut()
+        RatchetSessions.onSignedOut()
     }
 
     /** Keeps a contact's current public keys up to date while chats/groups with them are in use. */
@@ -171,50 +189,70 @@ object E2eeManager {
     /** Returns a copy of [message] that is safe to store in Firebase (no readable content). */
     suspend fun sealMessage(chatId: String, message: Message): Message {
         val isImage = message.messageType == MessageType.Image
-        val sealed = sealPairwise(
+        val envelope = sealRatchet(
             context = CONTEXT_CHAT,
-            scopeId = chatId,
+            chatId = chatId,
             messageId = message.messageId,
             senderId = message.senderId,
             receiverId = message.receiverId,
             messageType = message.messageType.name,
             timestamp = message.timestamp,
-            content = (if (isImage) message.imageRef else message.messageText).toByteArray(Charsets.UTF_8)
+            content = if (isImage) message.imageRef else message.messageText,
+            persist = true
         )
         return message.copy(
             messageText = "",
             imageRef = "",
-            v = E2eeCrypto.VERSION,
-            ct = sealed.ciphertext,
-            senderKey = sealed.senderKey,
-            receiverKey = sealed.receiverKey
+            v = RATCHET_VERSION,
+            ct = encode(envelope.ciphertext),
+            senderKey = "",
+            receiverKey = "",
+            dh = encode(envelope.header.dh),
+            pn = envelope.header.previousChainLength,
+            n = envelope.header.messageNumber,
+            preIk = envelope.preKey?.identityKey?.let { encode(it) } ?: "",
+            preEk = envelope.preKey?.ephemeralKey?.let { encode(it) } ?: "",
+            preSpk = envelope.preKey?.preKeyId ?: 0
         )
     }
 
     /** Returns a copy of [message] with its content decrypted (or a placeholder) for display. */
     suspend fun openMessage(chatId: String, message: Message, myUid: String): Message {
-        if (message.v == 0) {
-            return if (message.messageText.isNotEmpty()) {
+        val opened = when (message.v) {
+            0 -> return if (message.messageText.isNotEmpty()) {
                 message.copy(messageText = NOT_ENCRYPTED_PREFIX + message.messageText)
             } else message
-        }
-        if (message.v != E2eeCrypto.VERSION) {
-            return message.copy(messageText = TEXT_UNSUPPORTED, imageRef = "")
-        }
 
-        val opened = openPairwise(
-            context = CONTEXT_CHAT,
-            scopeId = chatId,
-            messageId = message.messageId,
-            senderId = message.senderId,
-            receiverId = message.receiverId,
-            messageType = message.messageType.name,
-            timestamp = message.timestamp,
-            senderKeyB64 = message.senderKey,
-            receiverKeyB64 = message.receiverKey,
-            ciphertextB64 = message.ct,
-            myUid = myUid
-        )
+            1 -> openPairwise( // messages from the earlier static Diffie-Hellman version
+                context = CONTEXT_CHAT,
+                scopeId = chatId,
+                messageId = message.messageId,
+                senderId = message.senderId,
+                receiverId = message.receiverId,
+                messageType = message.messageType.name,
+                timestamp = message.timestamp,
+                senderKeyB64 = message.senderKey,
+                receiverKeyB64 = message.receiverKey,
+                ciphertextB64 = message.ct,
+                myUid = myUid
+            )
+
+            RATCHET_VERSION -> openRatchet(
+                context = CONTEXT_CHAT,
+                chatId = chatId,
+                messageId = message.messageId,
+                senderId = message.senderId,
+                receiverId = message.receiverId,
+                messageType = message.messageType.name,
+                timestamp = message.timestamp,
+                dh = message.dh, pn = message.pn, n = message.n, ct = message.ct,
+                preIk = message.preIk, preEk = message.preEk, preSpk = message.preSpk,
+                myUid = myUid,
+                persist = true
+            )
+
+            else -> return message.copy(messageText = TEXT_UNSUPPORTED, imageRef = "")
+        }
         return when (opened) {
             is OpenedBytes.Ok -> {
                 val text = String(opened.bytes, Charsets.UTF_8)
@@ -229,50 +267,208 @@ object E2eeManager {
         }
     }
 
+    /** Incognito messages use the same ratchet session, but their text is never saved to disk. */
     suspend fun sealIncognito(chatId: String, message: IncognitoMessage): IncognitoMessage {
-        val sealed = sealPairwise(
+        val envelope = sealRatchet(
             context = CONTEXT_INCOGNITO,
-            scopeId = chatId,
+            chatId = chatId,
             messageId = message.messageId,
             senderId = message.senderId,
             receiverId = message.receiverId,
             messageType = MessageType.Text.name,
             timestamp = message.timestamp,
-            content = message.messageText.toByteArray(Charsets.UTF_8)
+            content = message.messageText,
+            persist = false
         )
         return message.copy(
             messageText = "",
-            v = E2eeCrypto.VERSION,
-            ct = sealed.ciphertext,
-            senderKey = sealed.senderKey,
-            receiverKey = sealed.receiverKey
+            v = RATCHET_VERSION,
+            ct = encode(envelope.ciphertext),
+            senderKey = "",
+            receiverKey = "",
+            dh = encode(envelope.header.dh),
+            pn = envelope.header.previousChainLength,
+            n = envelope.header.messageNumber,
+            preIk = envelope.preKey?.identityKey?.let { encode(it) } ?: "",
+            preEk = envelope.preKey?.ephemeralKey?.let { encode(it) } ?: "",
+            preSpk = envelope.preKey?.preKeyId ?: 0
         )
     }
 
     suspend fun openIncognito(chatId: String, message: IncognitoMessage, myUid: String): IncognitoMessage {
-        if (message.v == 0) {
-            return message.copy(messageText = NOT_ENCRYPTED_PREFIX + message.messageText)
-        }
-        if (message.v != E2eeCrypto.VERSION) return message.copy(messageText = TEXT_UNSUPPORTED)
+        val opened = when (message.v) {
+            0 -> return message.copy(messageText = NOT_ENCRYPTED_PREFIX + message.messageText)
+            1 -> openPairwise(
+                context = CONTEXT_INCOGNITO,
+                scopeId = chatId,
+                messageId = message.messageId,
+                senderId = message.senderId,
+                receiverId = message.receiverId,
+                messageType = MessageType.Text.name,
+                timestamp = message.timestamp,
+                senderKeyB64 = message.senderKey,
+                receiverKeyB64 = message.receiverKey,
+                ciphertextB64 = message.ct,
+                myUid = myUid
+            )
 
-        val opened = openPairwise(
-            context = CONTEXT_INCOGNITO,
-            scopeId = chatId,
-            messageId = message.messageId,
-            senderId = message.senderId,
-            receiverId = message.receiverId,
-            messageType = MessageType.Text.name,
-            timestamp = message.timestamp,
-            senderKeyB64 = message.senderKey,
-            receiverKeyB64 = message.receiverKey,
-            ciphertextB64 = message.ct,
-            myUid = myUid
-        )
+            RATCHET_VERSION -> openRatchet(
+                context = CONTEXT_INCOGNITO,
+                chatId = chatId,
+                messageId = message.messageId,
+                senderId = message.senderId,
+                receiverId = message.receiverId,
+                messageType = MessageType.Text.name,
+                timestamp = message.timestamp,
+                dh = message.dh, pn = message.pn, n = message.n, ct = message.ct,
+                preIk = message.preIk, preEk = message.preEk, preSpk = message.preSpk,
+                myUid = myUid,
+                persist = false
+            )
+
+            else -> return message.copy(messageText = TEXT_UNSUPPORTED)
+        }
         return when (opened) {
             is OpenedBytes.Ok -> message.copy(messageText = String(opened.bytes, Charsets.UTF_8))
             is OpenedBytes.Failed -> message.copy(messageText = opened.reason)
         }
     }
+
+    /** Call when a message was deleted, so its decrypted text is removed from this device too. */
+    suspend fun forgetMessage(chatId: String, myUid: String, messageId: String) =
+        RatchetSessions.forget(
+            chatId, myUid, listOf(storeId(CONTEXT_CHAT, messageId), storeId(CONTEXT_INCOGNITO, messageId))
+        )
+
+    /** Call when a whole chat was deleted. */
+    suspend fun forgetChat(chatId: String, myUid: String) = RatchetSessions.forgetChat(chatId, myUid)
+
+    // ---------------------------------------------------------------- Double Ratchet (1:1)
+
+    private suspend fun sealRatchet(
+        context: String,
+        chatId: String,
+        messageId: String,
+        senderId: String,
+        receiverId: String,
+        messageType: String,
+        timestamp: Long,
+        content: String,
+        persist: Boolean
+    ): RatchetSessions.Envelope {
+        val me = requireIdentity(senderId)
+        return RatchetSessions.encrypt(
+            chatId, me, receiverId, storeId(context, messageId), content,
+            ratchetAad(context, chatId, messageId, senderId, receiverId, messageType, timestamp),
+            persist
+        )
+    }
+
+    private suspend fun openRatchet(
+        context: String,
+        chatId: String,
+        messageId: String,
+        senderId: String,
+        receiverId: String,
+        messageType: String,
+        timestamp: Long,
+        dh: String,
+        pn: Int,
+        n: Int,
+        ct: String,
+        preIk: String,
+        preEk: String,
+        preSpk: Int,
+        myUid: String,
+        persist: Boolean
+    ): OpenedBytes {
+        val aad = ratchetAad(context, chatId, messageId, senderId, receiverId, messageType, timestamp)
+        // Senders can't decrypt their own ratchet messages: the text was kept when it was sent.
+        if (senderId == myUid) {
+            return RatchetSessions.sentText(chatId, myUid, storeId(context, messageId), aad)
+                ?.let { OpenedBytes.Ok(it.toByteArray(Charsets.UTF_8)) }
+                ?: OpenedBytes.Failed(TEXT_NOT_ON_DEVICE)
+        }
+        if (receiverId != myUid) return OpenedBytes.Failed(TEXT_UNDECRYPTABLE)
+
+        val envelope = try {
+            RatchetSessions.Envelope(
+                header = RatchetHeader(decode(dh), pn, n),
+                ciphertext = decode(ct),
+                preKey = if (preEk.isNotEmpty()) PreKeyInfo(decode(preIk), decode(preEk), preSpk) else null
+            )
+        } catch (e: IllegalArgumentException) {
+            return OpenedBytes.Failed(TEXT_UNDECRYPTABLE)
+        }
+        return RatchetSessions.decrypt(
+            chatId, identityFor(myUid), senderId, storeId(context, messageId), envelope, aad, persist
+        )
+    }
+
+    // Stored text is kept per context, so an incognito message can't reappear as a normal one.
+    private fun storeId(context: String, messageId: String) = "$context/$messageId"
+
+    // Message metadata bound to each ratchet ciphertext (identities are bound by the session itself).
+    private fun ratchetAad(
+        context: String,
+        chatId: String,
+        messageId: String,
+        senderId: String,
+        receiverId: String,
+        messageType: String,
+        timestamp: Long
+    ): ByteArray = E2eeCrypto.messageAad(
+        context, chatId, messageId, senderId, receiverId, messageType, timestamp, ByteArray(0), ByteArray(0)
+    )
+
+    /** A contact's signed prekey (id, key), only if its signature by their signing key checks out. */
+    internal suspend fun fetchPreKeyBundle(peerUid: String): Pair<Int, ByteArray>? {
+        val raw = fetchNode(userRef.child(peerUid).child(SIGNED_PREKEY_FIELD)) as? Map<*, *> ?: return null
+        val id = (raw["id"] as? Number)?.toInt() ?: return null
+        val key = (raw["key"] as? String)?.let { decodeKey(it) } ?: return null
+        val signature = (raw["sig"] as? String)?.let {
+            try {
+                decode(it)
+            } catch (e: IllegalArgumentException) {
+                null
+            }
+        } ?: return null
+        val signingKey = peerKey(peerUid, KeyKind.SIGNING, fresh = true)?.let { decode(it) } ?: return null
+        if (!E2eeCrypto.verify(signingKey, signature, X3dh.signedPreKeyData(peerUid, id, key))) {
+            Log.w(TAG, "Signed prekey of $peerUid has an invalid signature")
+            return null
+        }
+        return id to key
+    }
+
+    internal fun signedPreKeyPrivate(uid: String, id: Int): ByteArray? = vault.loadSignedPreKey(uid, id)
+
+    // The current signed prekey (rotated weekly; a few old ones are kept for late first messages).
+    private fun signedPreKey(me: Identity): Map<String, Any> {
+        val now = System.currentTimeMillis()
+        var current = vault.currentSignedPreKey(me.uid)
+        var privateKey = current?.let { vault.loadSignedPreKey(me.uid, it.first) }
+        if (current == null || privateKey == null || now - current.second > SIGNED_PREKEY_LIFETIME_MS) {
+            val id = (current?.first ?: 0) + 1
+            privateKey = E2eeCrypto.generatePrivateKey()
+            vault.saveSignedPreKey(me.uid, id, privateKey, now, SIGNED_PREKEYS_KEPT)
+            current = id to now
+            Log.i(TAG, "New signed prekey #$id")
+        }
+        val publicKey = E2eeCrypto.publicKeyOf(privateKey)
+        val signature = E2eeCrypto.sign(me.signPrivate, X3dh.signedPreKeyData(me.uid, current.first, publicKey))
+        return mapOf("id" to current.first, "key" to encode(publicKey), "sig" to encode(signature))
+    }
+
+    private suspend fun fetchNode(ref: com.google.firebase.database.DatabaseReference): Any? =
+        suspendCoroutine { cont ->
+            ref.get()
+                .addOnSuccessListener { cont.resume(it.value) }
+                .addOnFailureListener {
+                    Log.w(TAG, "Read failed: ${it.message}")
+                    cont.resume(null)
+                }
+        }
 
     // ---------------------------------------------------------------- pairwise (DH) sealing
 
@@ -297,9 +493,7 @@ object E2eeManager {
         val peerKeyB64 = receiverKeyB64
             ?: (if (receiverId == senderId) me.dhPublicB64
             else fetchPeerKey(receiverId, KeyKind.DH) ?: currentPeerKeys["${KeyKind.DH.field}|$receiverId"])
-            ?: throw E2eeException(
-                "Can't send securely yet: the other user needs to sign in to the latest ClubMate first"
-            )
+            ?: throw E2eeException(TEXT_PEER_NEEDS_UPDATE)
         val peerKey = decodeKey(peerKeyB64)
             ?: throw E2eeException("The other user's encryption key is invalid")
 
@@ -486,7 +680,7 @@ object E2eeManager {
      * A contact's key is trusted if the directory (`user/{uid}`) has shown it for that contact, now
      * or in the past. Keys that only appear inside a message are never trusted.
      */
-    private suspend fun isTrustedPeerKey(
+    internal suspend fun isTrustedPeerKey(
         me: Identity,
         peerUid: String,
         keyB64: String,

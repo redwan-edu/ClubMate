@@ -113,6 +113,51 @@ def print_group_and_channel_vectors():
     print("pbkdf2_rfc7914 =", hashlib.pbkdf2_hmac("sha256", b"passwd", b"salt", 1, 64).hex())
 
 
+
+
+# ---------------------------------------------------------------------------- X3DH + Double Ratchet
+
+def x3dh_initiate(ik_a_priv, ik_b_pub, spk_b_pub, ek_priv):
+    dh = lambda priv, pub: X25519PrivateKey.from_private_bytes(priv).exchange(X25519PublicKey.from_public_bytes(pub))
+    ikm = b"\xff" * 32 + dh(ik_a_priv, spk_b_pub) + dh(ek_priv, ik_b_pub) + dh(ek_priv, spk_b_pub)
+    return HKDF(algorithm=hashes.SHA256(), length=32, salt=bytes(32), info=b"ClubMate-X3DH-v1").derive(ikm)
+
+
+def kdf_rk(rk, dh_out):
+    out = HKDF(algorithm=hashes.SHA256(), length=64, salt=rk, info=b"ClubMate-DR-RK-v1").derive(dh_out)
+    return out[:32], out[32:]
+
+
+def kdf_ck(ck):
+    import hmac
+    return hmac.new(ck, b"\x02", hashlib.sha256).digest(), hmac.new(ck, b"\x01", hashlib.sha256).digest()
+
+
+def ratchet_seal(mk, plaintext, aad):
+    material = HKDF(algorithm=hashes.SHA256(), length=44, salt=bytes(32), info=b"ClubMate-DR-MK-v1").derive(mk)
+    return AESGCM(material[:32]).encrypt(material[32:], plaintext, aad)
+
+
+def print_ratchet_vectors():
+    ik_a = bytes.fromhex("77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a")
+    ik_b = bytes.fromhex("5dab087e624a8a4b79e17f8b83800ee66f3bb1292618b6fd1c2f8b27ff88e0eb")
+    spk_b, ek_a, ratchet_a = bytes(range(32, 64)), bytes(range(64, 96)), bytes(range(96, 128))
+    sk = x3dh_initiate(ik_a, public_key_of(ik_b), public_key_of(spk_b), ek_a)
+    ad = encode_fields(b"ClubMate-DR-AD-v1", b"uidAlice", public_key_of(ik_a), b"uidBob", public_key_of(ik_b))
+
+    dh = X25519PrivateKey.from_private_bytes(ratchet_a).exchange(X25519PublicKey.from_public_bytes(public_key_of(spk_b)))
+    rk, cks = kdf_rk(sk, dh)
+    cks2, mk = kdf_ck(cks)
+    header = encode_fields(b"ClubMate-DR-header-v1", public_key_of(ratchet_a), b"0", b"0")
+    extra = b"extra-aad"
+    ct = ratchet_seal(mk, "first ratchet message".encode(), encode_fields(ad, header, extra))
+
+    print("x3dh_sk        =", sk.hex())
+    print("dr_root_key    =", rk.hex())
+    print("dr_send_chain  =", cks.hex())
+    print("dr_first_ct    =", ct.hex())
+
+
 if __name__ == "__main__":
     # RFC 7748 section 6.1 test keys
     alice_priv = bytes.fromhex("77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a")
@@ -135,3 +180,4 @@ if __name__ == "__main__":
     print("sealed         =", sealed.hex())
 
     print_group_and_channel_vectors()
+    print_ratchet_vectors()

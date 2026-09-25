@@ -363,7 +363,7 @@ object E2eeCrypto {
     }
 
     /** Unambiguous encoding: each field is written as a 4-byte big-endian length followed by its bytes. */
-    private fun encodeFields(vararg fields: ByteArray): ByteArray {
+    internal fun encodeFields(vararg fields: ByteArray): ByteArray {
         val bytes = ByteArrayOutputStream()
         DataOutputStream(bytes).use { out ->
             for (field in fields) {
@@ -374,7 +374,7 @@ object E2eeCrypto {
         return bytes.toByteArray()
     }
 
-    private fun sha256(data: ByteArray): ByteArray = MessageDigest.getInstance("SHA-256").digest(data)
+    internal fun sha256(data: ByteArray): ByteArray = MessageDigest.getInstance("SHA-256").digest(data)
 
     private fun requireKeySize(key: ByteArray, name: String) {
         if (key.size != KEY_SIZE) throw GeneralSecurityException("Invalid $name length: ${key.size}")

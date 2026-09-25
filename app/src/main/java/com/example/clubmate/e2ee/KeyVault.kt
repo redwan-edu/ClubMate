@@ -19,6 +19,9 @@ import javax.crypto.spec.GCMParameterSpec
  * private SharedPreferences. They never leave the device and are excluded from backups (see
  * res/xml/backup_rules.xml).
  *
+ * It also keeps the X3DH signed prekeys (the current one and a few older ones) and the random key
+ * that encrypts the on-device chat store.
+ *
  * The vault also remembers every public key the directory has ever shown for a contact, so messages
  * sent before a contact changed keys can still be verified.
  */
@@ -37,6 +40,41 @@ internal class KeyVault(context: Context) {
 
     @Synchronized
     fun saveSigningKey(uid: String, privateKey: ByteArray) = saveSecret(signingKeyPref(uid), privateKey)
+
+    // ---- signed prekeys (X3DH): a few recent ones are kept so late session starts still work
+
+    @Synchronized
+    fun loadSignedPreKey(uid: String, id: Int): ByteArray? = loadSecret(signedPreKeyPref(uid, id))
+
+    /** Stores [privateKey] as the current signed prekey and forgets all but the newest [keep]. */
+    @Synchronized
+    fun saveSignedPreKey(uid: String, id: Int, privateKey: ByteArray, createdAt: Long, keep: Int) {
+        saveSecret(signedPreKeyPref(uid, id), privateKey)
+        val ids = (prefs.getString(signedPreKeyListPref(uid), "") ?: "")
+            .split(',').filter { it.isNotEmpty() }.map { it.toInt() } + id
+        val kept = ids.takeLast(keep)
+        val editor = prefs.edit()
+        (ids - kept.toSet()).forEach { editor.remove(signedPreKeyPref(uid, it)) }
+        editor.putString(signedPreKeyListPref(uid), kept.joinToString(","))
+            .putInt(currentSignedPreKeyPref(uid), id)
+            .putLong(currentSignedPreKeyTimePref(uid), createdAt)
+            .commit()
+    }
+
+    /** (id, createdAt) of the current signed prekey, or null if there is none yet. */
+    @Synchronized
+    fun currentSignedPreKey(uid: String): Pair<Int, Long>? {
+        if (!prefs.contains(currentSignedPreKeyPref(uid))) return null
+        return prefs.getInt(currentSignedPreKeyPref(uid), 0) to prefs.getLong(currentSignedPreKeyTimePref(uid), 0)
+    }
+
+    /** Random key that encrypts the on-device message and session store (see RatchetStore). */
+    @Synchronized
+    fun storageKey(): ByteArray = loadSecret(STORAGE_KEY_PREF)
+        ?: ByteArray(32).also {
+            java.security.SecureRandom().nextBytes(it)
+            saveSecret(STORAGE_KEY_PREF, it)
+        }
 
     /** [kind] is the directory field the key came from ("publicKey" or "signingKey"). */
     @Synchronized
@@ -104,6 +142,10 @@ internal class KeyVault(context: Context) {
 
     private fun privateKeyPref(uid: String) = "identity_private_$uid"
     private fun signingKeyPref(uid: String) = "signing_private_$uid"
+    private fun signedPreKeyPref(uid: String, id: Int) = "spk_private_${uid}_$id"
+    private fun signedPreKeyListPref(uid: String) = "spk_ids_$uid"
+    private fun currentSignedPreKeyPref(uid: String) = "spk_current_$uid"
+    private fun currentSignedPreKeyTimePref(uid: String) = "spk_current_time_$uid"
     private fun knownKeysPref(peerUid: String, kind: String) =
         if (kind == "publicKey") "known_keys_$peerUid" else "known_${kind}_$peerUid"
 
@@ -116,5 +158,6 @@ internal class KeyVault(context: Context) {
         private const val WRAPPING_KEY_ALIAS = "clubmate_e2ee_wrapping_key"
         private const val TRANSFORMATION = "AES/GCM/NoPadding"
         private const val SEPARATOR = ":"
+        private const val STORAGE_KEY_PREF = "storage_key"
     }
 }
