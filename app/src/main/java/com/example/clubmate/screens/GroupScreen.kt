@@ -84,8 +84,14 @@ fun GroupScreen(
     LaunchedEffect(Unit) { grpViewmodel.loadActivities(grpId) }
 
     val grpActivity = grpViewmodel.grpActivity.collectAsState()
-    LaunchedEffect(grpActivity.value) {
-        grpViewmodel.loadActivities(grpId)
+
+    // messages are never sent unencrypted: tell the user when encryption wasn't possible
+    val sendError by grpViewmodel.sendError.collectAsState()
+    LaunchedEffect(sendError) {
+        sendError?.let {
+            launchToast(context, it)
+            grpViewmodel.clearSendError()
+        }
     }
 
     val listState = rememberLazyListState()

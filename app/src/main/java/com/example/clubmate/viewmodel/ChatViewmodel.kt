@@ -7,11 +7,10 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.cloudinary.android.MediaManager
-import com.cloudinary.android.callback.ErrorInfo
 import com.example.clubmate.db.Routes
 import com.example.clubmate.db.UserState
 import com.example.clubmate.e2ee.E2eeManager
+import com.example.clubmate.e2ee.SecureImages
 import com.example.clubmate.screens.MessageStatus
 import com.example.clubmate.util.MessageType
 import com.example.clubmate.util.chat.Message
@@ -178,20 +177,24 @@ open class ChatViewModel : ViewModel() {
             val timestamp = System.currentTimeMillis()
 
             if (imageUri != null) {
-                // If an image is present, upload and then proceed
-                uploadImageToStorage(imageUri, chatId) { imageUrl ->
-                    val messageData = Message(
-                        messageId = messageId,
-                        senderId = senderId,
-                        receiverId = receiverId,
-                        messageText = "",
-                        imageRef = imageUrl,
-                        timestamp = timestamp,
-                        messageType = MessageType.Image,
-                        status = MessageStatus.SENDING
-                    )
-                    viewModelScope.launch { sendEncrypted(chatId, messageData) }
+                // The picture is encrypted on this device before upload; only the message holds its key.
+                val imageRef = try {
+                    SecureImages.upload(imageUri)
+                } catch (e: E2eeManager.E2eeException) {
+                    _sendError.value = e.message
+                    return@launch
                 }
+                val messageData = Message(
+                    messageId = messageId,
+                    senderId = senderId,
+                    receiverId = receiverId,
+                    messageText = "",
+                    imageRef = imageRef,
+                    timestamp = timestamp,
+                    messageType = MessageType.Image,
+                    status = MessageStatus.SENDING
+                )
+                sendEncrypted(chatId, messageData)
             } else {
                 val messageData = Message(
                     messageId = messageId,
@@ -238,37 +241,6 @@ open class ChatViewModel : ViewModel() {
             }
     }
 
-    private fun uploadImageToStorage(imageUri: Uri, chatId: String, onComplete: (String) -> Unit) {
-
-        val requestId = MediaManager.get().upload(imageUri)
-            .option("folder", "group_images/$chatId") // Store images inside "group_images/{grpId}"
-            .callback(object : com.cloudinary.android.callback.UploadCallback {
-                override fun onStart(requestId: String?) {
-                    Log.d("Cloudinary", "Upload started")
-                }
-
-                override fun onProgress(requestId: String?, bytes: Long, totalBytes: Long) {
-                    Log.d("Cloudinary", "Uploading: $bytes/$totalBytes")
-                }
-
-                override fun onSuccess(requestId: String?, resultData: MutableMap<Any?, Any?>?) {
-                    val imageUrl = resultData?.get("secure_url") as? String
-                    if (imageUrl != null) {
-                        onComplete(imageUrl) // Pass the Cloudinary image URL to save in the database
-                    }
-                }
-
-                override fun onError(requestId: String?, error: ErrorInfo?) {
-                    Log.e("Cloudinary", "Upload rescheduled")
-
-                }
-
-                override fun onReschedule(requestId: String?, error: ErrorInfo?) {
-                    Log.e("Cloudinary", "Upload rescheduled")
-
-                }
-            }).dispatch()
-    }
 
     private fun updateLastMessage(chatId: String, messageData: Message) {
         chatRef.child(chatId).child("msg").child("last").setValue(messageData)

@@ -14,9 +14,10 @@ import javax.crypto.spec.GCMParameterSpec
 /**
  * Device-local storage for E2EE keys.
  *
- * The X25519 private key is encrypted ("wrapped") with an AES-256-GCM key that lives inside the
- * Android Keystore and can never be exported, then stored in private SharedPreferences. It never
- * leaves the device and is excluded from backups (see res/xml/backup_rules.xml).
+ * The private keys (X25519 for key exchange, Ed25519 for signing) are encrypted ("wrapped") with an
+ * AES-256-GCM key that lives inside the Android Keystore and can never be exported, then stored in
+ * private SharedPreferences. They never leave the device and are excluded from backups (see
+ * res/xml/backup_rules.xml).
  *
  * The vault also remembers every public key the directory has ever shown for a contact, so messages
  * sent before a contact changed keys can still be verified.
@@ -26,8 +27,32 @@ internal class KeyVault(context: Context) {
     private val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
     @Synchronized
-    fun loadPrivateKey(uid: String): ByteArray? {
-        val stored = prefs.getString(privateKeyPref(uid), null) ?: return null
+    fun loadPrivateKey(uid: String): ByteArray? = loadSecret(privateKeyPref(uid))
+
+    @Synchronized
+    fun savePrivateKey(uid: String, privateKey: ByteArray) = saveSecret(privateKeyPref(uid), privateKey)
+
+    @Synchronized
+    fun loadSigningKey(uid: String): ByteArray? = loadSecret(signingKeyPref(uid))
+
+    @Synchronized
+    fun saveSigningKey(uid: String, privateKey: ByteArray) = saveSecret(signingKeyPref(uid), privateKey)
+
+    /** [kind] is the directory field the key came from ("publicKey" or "signingKey"). */
+    @Synchronized
+    fun isKnownPeerKey(peerUid: String, publicKeyB64: String, kind: String): Boolean =
+        prefs.getStringSet(knownKeysPref(peerUid, kind), emptySet())?.contains(publicKeyB64) == true
+
+    @Synchronized
+    fun addKnownPeerKey(peerUid: String, publicKeyB64: String, kind: String) {
+        val pref = knownKeysPref(peerUid, kind)
+        val known = prefs.getStringSet(pref, emptySet()) ?: emptySet()
+        if (publicKeyB64 in known) return
+        prefs.edit().putStringSet(pref, HashSet(known) + publicKeyB64).apply()
+    }
+
+    private fun loadSecret(pref: String): ByteArray? {
+        val stored = prefs.getString(pref, null) ?: return null
         return try {
             unwrap(stored)
         } catch (e: Exception) {
@@ -37,20 +62,8 @@ internal class KeyVault(context: Context) {
         }
     }
 
-    @Synchronized
-    fun savePrivateKey(uid: String, privateKey: ByteArray) {
-        prefs.edit().putString(privateKeyPref(uid), wrap(privateKey)).commit()
-    }
-
-    @Synchronized
-    fun isKnownPeerKey(peerUid: String, publicKeyB64: String): Boolean =
-        prefs.getStringSet(knownKeysPref(peerUid), emptySet())?.contains(publicKeyB64) == true
-
-    @Synchronized
-    fun addKnownPeerKey(peerUid: String, publicKeyB64: String) {
-        val known = prefs.getStringSet(knownKeysPref(peerUid), emptySet()) ?: emptySet()
-        if (publicKeyB64 in known) return
-        prefs.edit().putStringSet(knownKeysPref(peerUid), HashSet(known) + publicKeyB64).apply()
+    private fun saveSecret(pref: String, secret: ByteArray) {
+        prefs.edit().putString(pref, wrap(secret)).commit()
     }
 
     private fun wrap(plain: ByteArray): String {
@@ -90,7 +103,9 @@ internal class KeyVault(context: Context) {
     private fun decode(text: String) = Base64.decode(text, Base64.NO_WRAP)
 
     private fun privateKeyPref(uid: String) = "identity_private_$uid"
-    private fun knownKeysPref(peerUid: String) = "known_keys_$peerUid"
+    private fun signingKeyPref(uid: String) = "signing_private_$uid"
+    private fun knownKeysPref(peerUid: String, kind: String) =
+        if (kind == "publicKey") "known_keys_$peerUid" else "known_${kind}_$peerUid"
 
     companion object {
         /** Must match the exclusions in res/xml/backup_rules.xml and data_extraction_rules.xml. */

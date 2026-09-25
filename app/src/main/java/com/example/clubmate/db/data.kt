@@ -30,7 +30,8 @@ class Routes {
         val phone: String = "",
         val chatID: String = "",
         val publicKey: String = "", // X25519 public key (Base64) used for end-to-end encryption
-        val photoUrl: String = ""
+        val photoUrl: String = "",
+        val signingKey: String = "" // Ed25519 public key (Base64) used to sign group/channel messages
     )
 
     @Serializable

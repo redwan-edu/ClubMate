@@ -116,12 +116,13 @@ class AuthViewModel : ViewModel() {
         uid: String,
         onSuccess: () -> Unit
     ) {
-        // Public half of this device's X25519 key pair; the private half never leaves the device.
+        // Public halves of this device's key pairs; the private halves never leave the device.
         val userData = Routes.UserModel(
             username = userName,
             phone = phone, email = email,
             uid = uid,
-            publicKey = E2eeManager.publicKeyFor(uid)
+            publicKey = E2eeManager.publicKeyFor(uid),
+            signingKey = E2eeManager.signingKeyFor(uid)
         )
 
 

@@ -13,16 +13,22 @@ import com.cloudinary.android.callback.ErrorInfo
 import com.example.clubmate.db.GroupState
 import com.example.clubmate.db.Routes
 import com.example.clubmate.db.UserState
+import com.example.clubmate.e2ee.E2eeManager
+import com.example.clubmate.e2ee.GroupE2ee
+import com.example.clubmate.e2ee.SecureImages
 import com.example.clubmate.util.Category
 import com.example.clubmate.util.group.EventCategory
 import com.example.clubmate.util.group.GroupMessage
+import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.database.ChildEventListener
 import com.google.firebase.database.DataSnapshot
 import com.google.firebase.database.DatabaseError
+import com.google.firebase.database.DatabaseReference
 import com.google.firebase.database.FirebaseDatabase
 import com.google.firebase.database.GenericTypeIndicator
 import com.google.firebase.database.ValueEventListener
 import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -68,6 +74,25 @@ class GroupViewmodel : ViewModel() {
 
     private val _participantsList = MutableStateFlow<List<UserJoinDetails>>(emptyList())
     val participantsList = _participantsList
+
+    // set when a message/notice could not be encrypted or sent; screens show it as a toast
+    private val _sendError = MutableStateFlow<String?>(null)
+    val sendError: StateFlow<String?> = _sendError
+
+    fun clearSendError() {
+        _sendError.value = null
+    }
+
+    // active listeners, so reopening a group (or opening another one) never stacks them up
+    private var activitiesGrpId: String? = null
+    private var activitiesRef: DatabaseReference? = null
+    private var activitiesListener: ChildEventListener? = null
+    private var eventsGrpId: String? = null
+    private var eventsRef: DatabaseReference? = null
+    private var eventsListener: ValueEventListener? = null
+    private var eventsJob: Job? = null
+
+    private val myUid: String? get() = FirebaseAuth.getInstance().uid
 
 
     fun requestId(onResult: (String) -> Unit) {
@@ -335,7 +360,14 @@ class GroupViewmodel : ViewModel() {
                             userRef.child(uid).child("groups_connected").setValue(groupIds)
                                 .addOnSuccessListener {
                                     Log.d("leaveGroup", "Successfully removed group: $grpId")
-                                    onResult(true)
+                                    // Also leave the member list, so the next group key isn't shared
+                                    // with this user (see GroupE2ee key rotation).
+                                    grpRef.child(grpId).child("participants").child(uid).removeValue()
+                                        .addOnSuccessListener { onResult(true) }
+                                        .addOnFailureListener { error ->
+                                            Log.e("leaveGroup", "Failed to leave participants: ${error.message}")
+                                            onResult(false)
+                                        }
                                 }.addOnFailureListener { error ->
                                     Log.e(
                                         "leaveGroup",
@@ -722,20 +754,23 @@ class GroupViewmodel : ViewModel() {
             val timestamp = System.currentTimeMillis()
 
             if (imageUri != null) {
-                // If an image is present, upload and then proceed
-                uploadImageToStorage(imageUri = imageUri, grpId = grpId) { imageUrl ->
-                    val activityData = GroupActivity(
-                        message = GroupMessage(
-                            timestamp = timestamp,
-                            messageId = messageId,
-                            imageRef = imageUrl,  // Store the uploaded image URL
-                            senderId = senderId,
-                            messageText = "" // No text since it's an image message
-                        ), type = GroupActivityType.Image
-                    )
-                    saveActivityToDatabase(grpId, messageId, activityData)
-                    updateLastActivity(grpId, activityData)
+                // The picture is encrypted on this device before upload; only the message holds its key.
+                val imageRef = try {
+                    SecureImages.upload(imageUri)
+                } catch (e: E2eeManager.E2eeException) {
+                    _sendError.value = e.message
+                    return@launch
                 }
+                val activityData = GroupActivity(
+                    message = GroupMessage(
+                        timestamp = timestamp,
+                        messageId = messageId,
+                        imageRef = imageRef,
+                        senderId = senderId,
+                        messageText = "" // No text since it's an image message
+                    ), type = GroupActivityType.Image
+                )
+                sendEncryptedActivity(grpId, activityData)
             } else {
                 // Text message scenario
                 val activityData = GroupActivity(
@@ -744,51 +779,28 @@ class GroupViewmodel : ViewModel() {
                         senderId = senderId, messageText = messageText
                     ), type = GroupActivityType.Text
                 )
-                saveActivityToDatabase(grpId, messageId, activityData)
-                updateLastActivity(grpId, activityData)
+                sendEncryptedActivity(grpId, activityData)
             }
         }
     }
 
-
-    private fun uploadImageToStorage(
-        imageUri: Uri,
-        grpId: String,
-        onComplete: (String) -> Unit
-    ) {
-
-        val requestId = MediaManager.get().upload(imageUri)
-            .option("folder", "group_images/$grpId")
-            .callback(object : com.cloudinary.android.callback.UploadCallback {
-                override fun onStart(requestId: String?) {
-                    Log.d("Cloudinary", "Upload started")
-                }
-
-                override fun onProgress(requestId: String?, bytes: Long, totalBytes: Long) {
-                    Log.d("Cloudinary", "Uploading: $bytes/$totalBytes")
-                }
-
-                override fun onSuccess(requestId: String?, resultData: MutableMap<Any?, Any?>?) {
-                    val imageUrl = resultData?.get("secure_url") as? String
-                    if (imageUrl != null) {
-                        onComplete(imageUrl) // Pass the Cloudinary image URL to save in the database
-                    }
-                }
-
-                override fun onError(requestId: String?, error: ErrorInfo?) {
-                    Log.e("Cloudinary", "Upload rescheduled")
-
-                }
-
-                override fun onReschedule(requestId: String?, error: ErrorInfo?) {
-                    Log.e("Cloudinary", "Upload rescheduled")
-
-                }
-            }).dispatch()
+    // Only the encrypted copy ever reaches Firebase; nothing is sent if encryption fails.
+    private suspend fun sendEncryptedActivity(grpId: String, activityData: GroupActivity) {
+        val sealed = try {
+            GroupE2ee.sealActivity(grpId, activityData)
+        } catch (e: E2eeManager.E2eeException) {
+            Log.e("GroupE2EE", "Message not sent: ${e.message}")
+            _sendError.value = e.message
+            return
+        }
+        saveActivityToDatabase(grpId, sealed.message.messageId, sealed)
+        updateLastActivity(grpId, sealed)
     }
 
+
+
     private fun updateLastActivity(grpId: String, activityData: GroupActivity) {
-        grpRef.child(grpId).child("activities").child("lastAct").setValue(activityData)
+        grpRef.child(grpId).child("activities").child(LAST_ACTIVITY_KEY).setValue(activityData)
             .addOnSuccessListener {
                 Log.d("Success", "Activity added successfully")
             }.addOnFailureListener { e ->
@@ -809,16 +821,18 @@ class GroupViewmodel : ViewModel() {
     }
 
     fun getLastActivity(grpId: String, onResult: (GroupActivity?) -> Unit) {
+        val uid = myUid
 
-        grpRef.child(grpId).child("activities").child("lastAct")
-            .addValueEventListener(object : ValueEventListener {
+        grpRef.child(grpId).child("activities").child(LAST_ACTIVITY_KEY)
+            .addListenerForSingleValueEvent(object : ValueEventListener {
                 override fun onDataChange(snapshot: DataSnapshot) {
-                    if (snapshot.exists()) {
-                        val lastMsg = snapshot.getValue(GroupActivity::class.java)
+                    val lastMsg = if (snapshot.exists()) parseActivity(snapshot) else null
+                    if (lastMsg == null || uid == null) {
                         onResult(lastMsg)
-                    } else {
-                        onResult(null)
+                        return
                     }
+                    // decrypt the preview before handing it to the group list
+                    viewModelScope.launch { onResult(GroupE2ee.openActivity(grpId, lastMsg, uid)) }
                 }
 
                 override fun onCancelled(error: DatabaseError) {
@@ -830,44 +844,26 @@ class GroupViewmodel : ViewModel() {
 
 
     fun loadActivities(grpId: String) {
+        val uid = myUid ?: return
+        if (activitiesGrpId == grpId && activitiesListener != null) return // already listening
+        stopActivities()
+        activitiesGrpId = grpId
+        GroupE2ee.watchMembers(grpId)
 
-        grpRef.child(grpId).child("activities").addChildEventListener(object : ChildEventListener {
+        val ref = grpRef.child(grpId).child("activities")
+        val listener = object : ChildEventListener {
             override fun onChildAdded(snapshot: DataSnapshot, previousChildName: String?) {
-                val activity = snapshot.getValue(GroupActivity::class.java)
-                activity?.let {
-                    val updatedActivities = _grpActivity.value.toMutableList()
-                    if (updatedActivities.none { existingActivity ->
-                            existingActivity.message.timestamp == it.message.timestamp
-                        }) {
-                        updatedActivities.add(it)
-                        _grpActivity.value = updatedActivities
-                    }
-                }
+                showActivity(grpId, snapshot, uid)
             }
 
             override fun onChildChanged(snapshot: DataSnapshot, previousChildName: String?) {
-                val updatedActivity = snapshot.getValue(GroupActivity::class.java)
-                updatedActivity?.let {
-                    val activitiesList = _grpActivity.value.toMutableList()
-                    val index = activitiesList.indexOfFirst { existingActivity ->
-                        existingActivity.message.timestamp == it.message.timestamp
-                    }
-                    if (index >= 0) {
-                        activitiesList[index] = it
-                        _grpActivity.value = activitiesList
-                    }
-                }
+                showActivity(grpId, snapshot, uid)
             }
 
             override fun onChildRemoved(snapshot: DataSnapshot) {
-                val removedActivity = snapshot.getValue(GroupActivity::class.java)
-                removedActivity?.let {
-                    val activitiesList = _grpActivity.value.toMutableList()
-                    activitiesList.removeIf { activity ->
-                        activity.message.timestamp == removedActivity.message.timestamp
-                    }
-                    _grpActivity.value = activitiesList
-                }
+                val removedId = snapshot.key ?: return
+                if (removedId == LAST_ACTIVITY_KEY) return
+                _grpActivity.value = _grpActivity.value.filterNot { it.message.messageId == removedId }
             }
 
             override fun onChildMoved(snapshot: DataSnapshot, previousChildName: String?) {
@@ -877,7 +873,44 @@ class GroupViewmodel : ViewModel() {
             override fun onCancelled(error: DatabaseError) {
                 Log.e("TAG", "Error loading activities: ${error.message}")
             }
-        })
+        }
+        activitiesRef = ref
+        activitiesListener = listener
+        ref.addChildEventListener(listener)
+    }
+
+    // Decrypts an activity from Firebase and inserts/replaces it in the list.
+    private fun showActivity(grpId: String, snapshot: DataSnapshot, uid: String) {
+        // "lastAct" is the preview copy for the group list, not a separate message
+        if (snapshot.key == LAST_ACTIVITY_KEY) return
+        val raw = parseActivity(snapshot) ?: return
+        val activity = raw.copy(
+            message = raw.message.copy(messageId = raw.message.messageId.ifEmpty { snapshot.key.orEmpty() })
+        )
+
+        viewModelScope.launch {
+            val shown = GroupE2ee.openActivity(grpId, activity, uid)
+            if (activitiesGrpId != grpId) return@launch // user left this group meanwhile
+
+            val list = _grpActivity.value.toMutableList()
+            val index = list.indexOfFirst { it.message.messageId == shown.message.messageId }
+            if (index >= 0) list[index] = shown else list.add(shown)
+            _grpActivity.value = list
+        }
+    }
+
+    private fun parseActivity(snapshot: DataSnapshot): GroupActivity? = try {
+        snapshot.getValue(GroupActivity::class.java)
+    } catch (e: Exception) {
+        Log.e("GroupActivity", "Malformed activity ${snapshot.key}", e)
+        null
+    }
+
+    private fun stopActivities() {
+        activitiesListener?.let { listener -> activitiesRef?.removeEventListener(listener) }
+        activitiesListener = null
+        activitiesRef = null
+        activitiesGrpId = null
     }
 
 
@@ -993,6 +1026,7 @@ class GroupViewmodel : ViewModel() {
 
 
     fun clearMessage() {
+        stopActivities()
         _grpActivity.value = emptyList()
     }
 
@@ -1078,7 +1112,12 @@ class GroupViewmodel : ViewModel() {
         grpId: String,
         onComplete: (Boolean) -> Unit
     ) {
+        val senderId = myUid
         val messageId = grpRef.child(grpId).push().key ?: ""
+        if (senderId == null || messageId.isEmpty()) {
+            onComplete(false)
+            return
+        }
         val timestamp = System.currentTimeMillis()
         val eventData = EventData(
             type = type,
@@ -1089,36 +1128,72 @@ class GroupViewmodel : ViewModel() {
             visibility = visibility
         )
 
-        grpRef.child(grpId).child("events").child(messageId).setValue(eventData)
-            .addOnSuccessListener {
-                onComplete(true)
-            }.addOnFailureListener {
+        viewModelScope.launch {
+            // Only the encrypted copy ever reaches Firebase; nothing is sent if encryption fails.
+            val sealed = try {
+                GroupE2ee.sealEvent(grpId, eventData, senderId)
+            } catch (e: E2eeManager.E2eeException) {
+                Log.e("GroupE2EE", "Notice not sent: ${e.message}")
+                _sendError.value = e.message
                 onComplete(false)
+                return@launch
             }
-
+            grpRef.child(grpId).child("events").child(messageId).setValue(sealed)
+                .addOnSuccessListener {
+                    onComplete(true)
+                }.addOnFailureListener {
+                    onComplete(false)
+                }
+        }
     }
 
 
-    // Change receiveEvent() to use continuous listener
+    // Continuous listener; calling it again for the same group is a no-op.
     fun receiveEvent(grpId: String, type: EventCategory) {
-        grpRef.child(grpId).child("events")
-            .addValueEventListener(object :
-                ValueEventListener { // Changed from addListenerForSingleValueEvent
-                override fun onDataChange(snapshot: DataSnapshot) {
-                    val eventList = mutableListOf<EventData>()
-                    for (eventSnapshot in snapshot.children) {
-                        val event = eventSnapshot.getValue(EventData::class.java)?.apply {
-                            messageId = eventSnapshot.key ?: ""
-                        }
-                        event?.let { eventList.add(it) }
-                    }
-                    _eventList.value = eventList
-                }
+        val uid = myUid ?: return
+        if (eventsGrpId == grpId && eventsListener != null) return
+        stopEvents()
+        eventsGrpId = grpId
+        GroupE2ee.watchMembers(grpId)
 
-                override fun onCancelled(error: DatabaseError) {
-                    _eventList.value = emptyList()
+        val ref = grpRef.child(grpId).child("events")
+        val listener = object : ValueEventListener {
+            override fun onDataChange(snapshot: DataSnapshot) {
+                val events = mutableListOf<EventData>()
+                for (eventSnapshot in snapshot.children) {
+                    try {
+                        eventSnapshot.getValue(EventData::class.java)?.apply {
+                            messageId = eventSnapshot.key ?: ""
+                        }?.let { events.add(it) }
+                    } catch (e: Exception) {
+                        Log.e("GroupEvents", "Malformed event ${eventSnapshot.key}", e)
+                    }
                 }
-            })
+                // each snapshot is the full list, so only the newest decryption run matters
+                eventsJob?.cancel()
+                eventsJob = viewModelScope.launch {
+                    val shown = events.map { GroupE2ee.openEvent(grpId, it, uid) }
+                    if (eventsGrpId == grpId) _eventList.value = shown
+                }
+            }
+
+            override fun onCancelled(error: DatabaseError) {
+                _eventList.value = emptyList()
+            }
+        }
+        eventsRef = ref
+        eventsListener = listener
+        ref.addValueEventListener(listener)
+    }
+
+    private fun stopEvents() {
+        eventsListener?.let { listener -> eventsRef?.removeEventListener(listener) }
+        eventsListener = null
+        eventsRef = null
+        eventsGrpId = null
+        eventsJob?.cancel()
+        eventsJob = null
+        _eventList.value = emptyList()
     }
 
     fun deleteEvent(grpId: String, messageId: String, callback: (Boolean) -> Unit) {
@@ -1136,6 +1211,17 @@ class GroupViewmodel : ViewModel() {
                 callback(false)
             }
     }
+
+    override fun onCleared() {
+        stopActivities()
+        stopEvents()
+        super.onCleared()
+    }
+
+    private companion object {
+        // preview copy of the newest message, stored next to the messages in "activities"
+        const val LAST_ACTIVITY_KEY = "lastAct"
+    }
 }
 
 
@@ -1145,7 +1231,14 @@ data class EventData(
     val description: String = "",
     var messageId: String = "",
     val visibility: Category = Category.General,
-    val timeStamp: Long = 0L
+    val timeStamp: Long = 0L,
+    // end-to-end encryption (see e2ee/GroupE2ee): v = 0 means a legacy plaintext notice
+    val senderId: String = "",
+    val v: Int = 0,
+    val epochId: String = "",
+    val ct: String = "",
+    val signKey: String = "",
+    val sig: String = ""
 )
 
 data class GroupDetails(

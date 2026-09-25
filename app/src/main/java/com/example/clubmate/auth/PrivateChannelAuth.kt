@@ -250,7 +250,7 @@ fun PrivateChannelAuth(
                                             isLoading = false
                                             launchToast(
                                                 context = context,
-                                                "Room has been deleted"
+                                                "Wrong channel ID or password"
                                             )
                                         }
                                     }
@@ -295,7 +295,7 @@ fun PrivateChannelAuth(
                                         isLoading = false
                                         launchToast(
                                             context = context,
-                                            "Room has been deleted"
+                                            "Wrong channel ID or password"
                                         )
                                     }
                                 }

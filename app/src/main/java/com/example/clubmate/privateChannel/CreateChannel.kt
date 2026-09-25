@@ -50,6 +50,7 @@ import com.example.clubmate.db.Routes
 import com.example.clubmate.screens.launchToast
 import com.example.clubmate.ui.theme.Composables.Companion.TextDesign
 import com.example.clubmate.ui.theme.roboto
+import com.example.clubmate.e2ee.ChannelE2ee
 import com.example.clubmate.viewmodel.PrivateChannelViewModel
 
 @SuppressLint("UnusedMaterial3ScaffoldPaddingParameter")
@@ -228,6 +229,13 @@ fun CreatePrivateChannelScreen(
                         if (channelId.isEmpty() || userId.isEmpty() || password.isEmpty()) {
                             Toast.makeText(
                                 context, "All fields must be filled", Toast.LENGTH_SHORT
+                            ).show()
+                        } else if (password.length < ChannelE2ee.MIN_PASSWORD_LENGTH) {
+                            // the password is the channel's encryption key, so it must not be guessable
+                            Toast.makeText(
+                                context,
+                                "Password must be at least ${ChannelE2ee.MIN_PASSWORD_LENGTH} characters",
+                                Toast.LENGTH_SHORT
                             ).show()
                         } else {
                             viewmodel.createChatroom(

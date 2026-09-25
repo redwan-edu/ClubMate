@@ -776,12 +776,17 @@ fun Console(
                                                         message = event,
                                                         visibility = selectedCategory,
                                                         grpId = args.grpId
-                                                    ) {
-                                                        title = ""
-                                                        event = ""
-                                                        link = ""
-                                                        notice = ""
-                                                        launchToast(context, "Upload successful")
+                                                    ) { uploaded ->
+                                                        if (uploaded) {
+                                                            title = ""
+                                                            event = ""
+                                                            link = ""
+                                                            notice = ""
+                                                            launchToast(context, "Upload successful")
+                                                        } else {
+                                                            launchToast(context, grpViewmodel.sendError.value ?: "Upload failed")
+                                                            grpViewmodel.clearSendError()
+                                                        }
                                                     }
                                                 }
 
@@ -797,8 +802,13 @@ fun Console(
                                                         message = link,
                                                         visibility = selectedCategory,
                                                         grpId = args.grpId
-                                                    ) {
-                                                        launchToast(context, "Upload successful")
+                                                    ) { uploaded ->
+                                                        launchToast(
+                                                            context,
+                                                            if (uploaded) "Upload successful"
+                                                            else grpViewmodel.sendError.value ?: "Upload failed"
+                                                        )
+                                                        grpViewmodel.clearSendError()
                                                     }
                                                 }
                                             }
@@ -813,8 +823,13 @@ fun Console(
                                                         message = notice,
                                                         visibility = selectedCategory,
                                                         grpId = args.grpId
-                                                    ) {
-                                                        launchToast(context, "Upload successful")
+                                                    ) { uploaded ->
+                                                        launchToast(
+                                                            context,
+                                                            if (uploaded) "Upload successful"
+                                                            else grpViewmodel.sendError.value ?: "Upload failed"
+                                                        )
+                                                        grpViewmodel.clearSendError()
                                                     }
                                                 }
                                             }

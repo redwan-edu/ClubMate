@@ -69,6 +69,7 @@ import com.example.clubmate.viewmodel.PrivateChannelViewModel
 fun PrivateChannel(
     channelId: String,
     uid: String,
+    password: String,
     viewModel: PrivateChannelViewModel,
     navController: NavHostController
 ) {
@@ -92,8 +93,17 @@ fun PrivateChannel(
         }
     }
 
+    // derive the channel key from the password, then start showing decrypted messages
     LaunchedEffect(Unit) {
-        viewModel.listenForMessages(channelId)
+        viewModel.openChannel(channelId = channelId, password = password, uid = uid)
+    }
+
+    val error by viewModel.error.collectAsState()
+    LaunchedEffect(error) {
+        error?.let {
+            launchToast(context, it)
+            viewModel.clearError()
+        }
     }
 
     var selectedImageUri by remember { mutableStateOf<Uri?>(null) }

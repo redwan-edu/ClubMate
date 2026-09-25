@@ -35,7 +35,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import coil3.compose.AsyncImage
+import com.example.clubmate.util.SecureAsyncImage
 import com.example.clubmate.R
 import com.example.clubmate.ui.theme.roboto
 import com.example.clubmate.viewmodel.GroupActivity
@@ -151,7 +151,7 @@ fun GroupActivityDesign(
                                 color = Color.Gray,
                                 strokeWidth = 4.dp
                             )
-                            AsyncImage(
+                            SecureAsyncImage(
                                 model = activity.message.imageRef,
                                 contentDescription = "Sent Image",
                                 contentScale = ContentScale.Inside,

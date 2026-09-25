@@ -264,6 +264,7 @@ fun App(
             PrivateChannel(
                 uid = args.uid,
                 channelId = args.channelId,
+                password = args.password,
                 viewModel = privateChannelViewModel,
                 navController = navController
             )

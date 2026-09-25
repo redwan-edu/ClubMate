@@ -17,10 +17,11 @@ import kotlin.coroutines.resume
 import kotlin.coroutines.suspendCoroutine
 
 /**
- * Glue between the app and [E2eeCrypto]: owns this device's key pair, publishes the public key to
- * `user/{uid}/publicKey`, looks up contacts' public keys, and seals/opens chat messages.
+ * Glue between the app and [E2eeCrypto]: owns this device's key pairs, publishes the public keys to
+ * `user/{uid}` (`publicKey` = X25519, `signingKey` = Ed25519), looks up contacts' public keys, and
+ * seals/opens 1:1 chat messages. [GroupE2ee] and [ChannelE2ee] build on the helpers here.
  *
- * Encrypted messages in Firebase carry `v = 1`, the Base64 ciphertext in `ct`, and the two public
+ * Encrypted 1:1 messages in Firebase carry `v = 1`, the Base64 ciphertext in `ct`, and the two public
  * keys used (`senderKey`, `receiverKey`). The readable fields `messageText` and `imageRef` are always
  * stored empty.
  */
@@ -34,19 +35,38 @@ object E2eeManager {
     const val TEXT_UNDECRYPTABLE = "🔒 This message can't be decrypted on this device"
     const val TEXT_UNTRUSTED_KEY = "🔒 Message blocked: the sender's key isn't recognised"
     const val TEXT_UNSUPPORTED = "🔒 This message needs a newer version of ClubMate"
+    const val TEXT_NO_GROUP_KEY = "🔒 Sent before you joined, or to an old key of yours"
     const val NOT_ENCRYPTED_PREFIX = "⚠️ Not encrypted: "
 
     class E2eeException(message: String) : Exception(message)
 
     class Sealed(val ciphertext: String, val senderKey: String, val receiverKey: String)
 
-    sealed class Opened {
-        class Plain(val text: String) : Opened()
-        class Failed(val reason: String) : Opened()
+    /** Ciphertext sealed with a shared (group/channel) key and signed by the sender. */
+    class SignedCiphertext(val ciphertext: String, val signKey: String, val signature: String)
+
+    internal sealed class OpenedBytes {
+        class Ok(val bytes: ByteArray) : OpenedBytes()
+        class Failed(val reason: String) : OpenedBytes()
     }
 
-    private class Identity(val uid: String, val privateKey: ByteArray, val publicKey: ByteArray) {
-        val publicKeyB64: String = encode(publicKey)
+    internal sealed class OpenedFields {
+        class Ok(val fields: List<String>) : OpenedFields()
+        class Failed(val reason: String) : OpenedFields()
+    }
+
+    /** The two public keys every user publishes, by their field name in `user/{uid}`. */
+    internal enum class KeyKind(val field: String) { DH("publicKey"), SIGNING("signingKey") }
+
+    internal class Identity(
+        val uid: String,
+        val dhPrivate: ByteArray,
+        val dhPublic: ByteArray,
+        val signPrivate: ByteArray,
+        val signPublic: ByteArray
+    ) {
+        val dhPublicB64: String = encode(dhPublic)
+        val signPublicB64: String = encode(signPublic)
     }
 
     private lateinit var vault: KeyVault
@@ -56,26 +76,30 @@ object E2eeManager {
     private var identity: Identity? = null
     private var publishedUid: String? = null
 
-    /** Latest public key the directory shows for each contact (Base64). */
+    /** Latest public key the directory shows, keyed by "field|uid" (Base64). */
     private val currentPeerKeys = ConcurrentHashMap<String, String>()
 
-    /** Derived AES keys, cached per (my key, contact, contact's key). */
+    /** Derived pairwise AES keys, cached per (my key, contact, contact's key). */
     private val conversationKeys = ConcurrentHashMap<String, ByteArray>()
 
-    /** (contact|key) pairs already looked up in the directory without a match. */
+    /** "field|uid|key" triples already looked up in the directory without a match. */
     private val rejectedPeerKeys = ConcurrentHashMap.newKeySet<String>()
 
     private val peerWatchers = ConcurrentHashMap<String, ValueEventListener>()
 
     fun init(context: Context) {
         vault = KeyVault(context.applicationContext)
+        SecureImages.init(context)
     }
 
-    /** Public key (Base64) of [uid] on this device; creates the key pair if needed. */
-    fun publicKeyFor(uid: String): String = identityFor(uid).publicKeyB64
+    /** X25519 public key (Base64) of [uid] on this device; creates the key pairs if needed. */
+    fun publicKeyFor(uid: String): String = identityFor(uid).dhPublicB64
+
+    /** Ed25519 public key (Base64) of [uid] on this device; creates the key pairs if needed. */
+    fun signingKeyFor(uid: String): String = identityFor(uid).signPublicB64
 
     /**
-     * Makes sure this device has a key pair for [uid] and that its public half is published.
+     * Makes sure this device has key pairs for [uid] and that the public halves are published.
      * Safe to call repeatedly; the upload only happens once per sign-in.
      */
     @Synchronized
@@ -85,16 +109,17 @@ object E2eeManager {
         publishedUid = uid
 
         val update = mapOf<String, Any?>(
-            "publicKey" to id.publicKeyB64,
+            KeyKind.DH.field to id.dhPublicB64,
+            KeyKind.SIGNING.field to id.signPublicB64,
             // Remove the old password-encrypted private key: private keys must never be on the server.
             "encryptedPrivateKey" to null
         )
         userRef.child(uid).updateChildren(update)
             .addOnSuccessListener {
-                Log.d(TAG, "Published public key ${E2eeCrypto.fingerprint(id.publicKey)}")
+                Log.d(TAG, "Published public keys ${E2eeCrypto.fingerprint(id.dhPublic)}")
             }
             .addOnFailureListener { e ->
-                Log.e(TAG, "Failed to publish public key", e)
+                Log.e(TAG, "Failed to publish public keys", e)
                 synchronized(this) { if (publishedUid == uid) publishedUid = null }
             }
     }
@@ -106,48 +131,55 @@ object E2eeManager {
         currentPeerKeys.clear()
         conversationKeys.clear()
         rejectedPeerKeys.clear()
-        peerWatchers.forEach { (peerUid, listener) ->
-            userRef.child(peerUid).child("publicKey").removeEventListener(listener)
+        peerWatchers.forEach { (fieldAndUid, listener) ->
+            val (field, peerUid) = fieldAndUid.split("|", limit = 2)
+            userRef.child(peerUid).child(field).removeEventListener(listener)
         }
         peerWatchers.clear()
+        GroupE2ee.onSignedOut()
+        ChannelE2ee.onSignedOut()
     }
 
-    /** Keeps the contact's current public key up to date while a chat with them is in use. */
+    /** Keeps a contact's current public keys up to date while chats/groups with them are in use. */
     fun watchPeer(peerUid: String) {
-        if (peerUid.isEmpty() || peerWatchers.containsKey(peerUid)) return
-        val listener = object : ValueEventListener {
-            override fun onDataChange(snapshot: DataSnapshot) {
-                val keyB64 = snapshot.value as? String
-                if (keyB64 != null && decodeKey(keyB64) != null) {
-                    rememberPeerKey(peerUid, keyB64)
-                } else {
-                    currentPeerKeys.remove(peerUid)
+        if (peerUid.isEmpty()) return
+        for (kind in KeyKind.values()) {
+            val watchKey = "${kind.field}|$peerUid"
+            if (peerWatchers.containsKey(watchKey)) continue
+            val listener = object : ValueEventListener {
+                override fun onDataChange(snapshot: DataSnapshot) {
+                    val keyB64 = snapshot.value as? String
+                    if (keyB64 != null && decodeKey(keyB64) != null) {
+                        rememberPeerKey(peerUid, keyB64, kind)
+                    } else {
+                        currentPeerKeys.remove(watchKey)
+                    }
+                }
+
+                override fun onCancelled(error: DatabaseError) {
+                    Log.w(TAG, "Stopped watching ${kind.field} of $peerUid: ${error.message}")
                 }
             }
-
-            override fun onCancelled(error: DatabaseError) {
-                Log.w(TAG, "Stopped watching key of $peerUid: ${error.message}")
+            if (peerWatchers.putIfAbsent(watchKey, listener) == null) {
+                userRef.child(peerUid).child(kind.field).addValueEventListener(listener)
             }
-        }
-        if (peerWatchers.putIfAbsent(peerUid, listener) == null) {
-            userRef.child(peerUid).child("publicKey").addValueEventListener(listener)
         }
     }
 
-    // ---------------------------------------------------------------- chat messages
+    // ---------------------------------------------------------------- 1:1 chat messages
 
     /** Returns a copy of [message] that is safe to store in Firebase (no readable content). */
     suspend fun sealMessage(chatId: String, message: Message): Message {
         val isImage = message.messageType == MessageType.Image
-        val sealed = seal(
+        val sealed = sealPairwise(
             context = CONTEXT_CHAT,
-            chatId = chatId,
+            scopeId = chatId,
             messageId = message.messageId,
             senderId = message.senderId,
             receiverId = message.receiverId,
             messageType = message.messageType.name,
             timestamp = message.timestamp,
-            content = if (isImage) message.imageRef else message.messageText
+            content = (if (isImage) message.imageRef else message.messageText).toByteArray(Charsets.UTF_8)
         )
         return message.copy(
             messageText = "",
@@ -170,9 +202,9 @@ object E2eeManager {
             return message.copy(messageText = TEXT_UNSUPPORTED, imageRef = "")
         }
 
-        val opened = open(
+        val opened = openPairwise(
             context = CONTEXT_CHAT,
-            chatId = chatId,
+            scopeId = chatId,
             messageId = message.messageId,
             senderId = message.senderId,
             receiverId = message.receiverId,
@@ -184,26 +216,29 @@ object E2eeManager {
             myUid = myUid
         )
         return when (opened) {
-            is Opened.Plain -> if (message.messageType == MessageType.Image) {
-                message.copy(imageRef = opened.text, messageText = "")
-            } else {
-                message.copy(messageText = opened.text, imageRef = "")
+            is OpenedBytes.Ok -> {
+                val text = String(opened.bytes, Charsets.UTF_8)
+                if (message.messageType == MessageType.Image) {
+                    message.copy(imageRef = text, messageText = "")
+                } else {
+                    message.copy(messageText = text, imageRef = "")
+                }
             }
 
-            is Opened.Failed -> message.copy(messageText = opened.reason, imageRef = "")
+            is OpenedBytes.Failed -> message.copy(messageText = opened.reason, imageRef = "")
         }
     }
 
     suspend fun sealIncognito(chatId: String, message: IncognitoMessage): IncognitoMessage {
-        val sealed = seal(
+        val sealed = sealPairwise(
             context = CONTEXT_INCOGNITO,
-            chatId = chatId,
+            scopeId = chatId,
             messageId = message.messageId,
             senderId = message.senderId,
             receiverId = message.receiverId,
             messageType = MessageType.Text.name,
             timestamp = message.timestamp,
-            content = message.messageText
+            content = message.messageText.toByteArray(Charsets.UTF_8)
         )
         return message.copy(
             messageText = "",
@@ -220,9 +255,9 @@ object E2eeManager {
         }
         if (message.v != E2eeCrypto.VERSION) return message.copy(messageText = TEXT_UNSUPPORTED)
 
-        val opened = open(
+        val opened = openPairwise(
             context = CONTEXT_INCOGNITO,
-            chatId = chatId,
+            scopeId = chatId,
             messageId = message.messageId,
             senderId = message.senderId,
             receiverId = message.receiverId,
@@ -234,29 +269,34 @@ object E2eeManager {
             myUid = myUid
         )
         return when (opened) {
-            is Opened.Plain -> message.copy(messageText = opened.text)
-            is Opened.Failed -> message.copy(messageText = opened.reason)
+            is OpenedBytes.Ok -> message.copy(messageText = String(opened.bytes, Charsets.UTF_8))
+            is OpenedBytes.Failed -> message.copy(messageText = opened.reason)
         }
     }
 
-    // ---------------------------------------------------------------- core seal / open
+    // ---------------------------------------------------------------- pairwise (DH) sealing
 
-    private suspend fun seal(
+    /**
+     * Encrypts [content] from [senderId] to [receiverId] with their shared Diffie-Hellman key.
+     * The receiver's key is taken from the directory unless [receiverKeyB64] is given.
+     */
+    internal suspend fun sealPairwise(
         context: String,
-        chatId: String,
+        scopeId: String,
         messageId: String,
         senderId: String,
         receiverId: String,
         messageType: String,
         timestamp: Long,
-        content: String
+        content: ByteArray,
+        receiverKeyB64: String? = null
     ): Sealed {
-        onSignedIn(senderId)
-        val me = identityFor(senderId)
+        val me = requireIdentity(senderId)
 
-        // Always ask the directory first so a contact's new key is picked up immediately.
-        val peerKeyB64 = (if (receiverId == senderId) me.publicKeyB64
-        else fetchPeerKey(receiverId) ?: currentPeerKeys[receiverId])
+        // Ask the directory first so a contact's new key is picked up immediately.
+        val peerKeyB64 = receiverKeyB64
+            ?: (if (receiverId == senderId) me.dhPublicB64
+            else fetchPeerKey(receiverId, KeyKind.DH) ?: currentPeerKeys["${KeyKind.DH.field}|$receiverId"])
             ?: throw E2eeException(
                 "Can't send securely yet: the other user needs to sign in to the latest ClubMate first"
             )
@@ -265,24 +305,23 @@ object E2eeManager {
 
         return try {
             val aad = E2eeCrypto.messageAad(
-                context, chatId, messageId, senderId, receiverId, messageType, timestamp,
-                me.publicKey, peerKey
+                context, scopeId, messageId, senderId, receiverId, messageType, timestamp,
+                me.dhPublic, peerKey
             )
             val ciphertext = E2eeCrypto.encrypt(
-                conversationKey(me, receiverId, peerKey, peerKeyB64),
-                content.toByteArray(Charsets.UTF_8),
-                aad
+                conversationKey(me, receiverId, peerKey, peerKeyB64), content, aad
             )
-            Sealed(encode(ciphertext), me.publicKeyB64, peerKeyB64)
+            Sealed(encode(ciphertext), me.dhPublicB64, peerKeyB64)
         } catch (e: GeneralSecurityException) {
             Log.e(TAG, "Encryption failed", e)
             throw E2eeException("Message could not be encrypted")
         }
     }
 
-    private suspend fun open(
+    /** Reverses [sealPairwise] for either participant, after checking both keys are legitimate. */
+    internal suspend fun openPairwise(
         context: String,
-        chatId: String,
+        scopeId: String,
         messageId: String,
         senderId: String,
         receiverId: String,
@@ -292,81 +331,188 @@ object E2eeManager {
         receiverKeyB64: String,
         ciphertextB64: String,
         myUid: String
-    ): Opened {
+    ): OpenedBytes {
         val me = identityFor(myUid)
         val iAmSender = senderId == myUid
-        if (!iAmSender && receiverId != myUid) return Opened.Failed(TEXT_UNDECRYPTABLE)
+        if (!iAmSender && receiverId != myUid) return OpenedBytes.Failed(TEXT_UNDECRYPTABLE)
 
         val peerUid = if (iAmSender) receiverId else senderId
         val myKeyInMessage = if (iAmSender) senderKeyB64 else receiverKeyB64
         val peerKeyInMessage = if (iAmSender) receiverKeyB64 else senderKeyB64
 
         // Encrypted for a key pair this device doesn't have (e.g. the app was reinstalled).
-        if (myKeyInMessage != me.publicKeyB64) return Opened.Failed(TEXT_UNDECRYPTABLE)
+        if (myKeyInMessage != me.dhPublicB64) return OpenedBytes.Failed(TEXT_UNDECRYPTABLE)
 
-        val peerKey = decodeKey(peerKeyInMessage) ?: return Opened.Failed(TEXT_UNTRUSTED_KEY)
-        if (!isTrustedPeerKey(me, peerUid, peerKeyInMessage)) {
-            Log.w(TAG, "Rejected message $messageId: unknown key for $peerUid")
-            return Opened.Failed(TEXT_UNTRUSTED_KEY)
+        val peerKey = decodeKey(peerKeyInMessage) ?: return OpenedBytes.Failed(TEXT_UNTRUSTED_KEY)
+        if (!isTrustedPeerKey(me, peerUid, peerKeyInMessage, KeyKind.DH)) {
+            Log.w(TAG, "Rejected $messageId: unknown key for $peerUid")
+            return OpenedBytes.Failed(TEXT_UNTRUSTED_KEY)
         }
 
         return try {
             val aad = E2eeCrypto.messageAad(
-                context, chatId, messageId, senderId, receiverId, messageType, timestamp,
-                if (iAmSender) me.publicKey else peerKey,
-                if (iAmSender) peerKey else me.publicKey
+                context, scopeId, messageId, senderId, receiverId, messageType, timestamp,
+                if (iAmSender) me.dhPublic else peerKey,
+                if (iAmSender) peerKey else me.dhPublic
             )
-            val plaintext = E2eeCrypto.decrypt(
-                conversationKey(me, peerUid, peerKey, peerKeyInMessage),
-                decode(ciphertextB64),
-                aad
+            OpenedBytes.Ok(
+                E2eeCrypto.decrypt(
+                    conversationKey(me, peerUid, peerKey, peerKeyInMessage), decode(ciphertextB64), aad
+                )
             )
-            Opened.Plain(String(plaintext, Charsets.UTF_8))
         } catch (e: GeneralSecurityException) {
-            Log.w(TAG, "Rejected message $messageId: authentication failed")
-            Opened.Failed(TEXT_UNDECRYPTABLE)
+            Log.w(TAG, "Rejected $messageId: authentication failed")
+            OpenedBytes.Failed(TEXT_UNDECRYPTABLE)
         } catch (e: IllegalArgumentException) {
-            Log.w(TAG, "Rejected message $messageId: malformed ciphertext")
-            Opened.Failed(TEXT_UNDECRYPTABLE)
+            Log.w(TAG, "Rejected $messageId: malformed ciphertext")
+            OpenedBytes.Failed(TEXT_UNDECRYPTABLE)
+        }
+    }
+
+    // ---------------------------------------------------------------- shared-key (group/channel) sealing
+
+    /** Encrypts [fields] with a shared [key] and signs the result with the sender's Ed25519 key. */
+    internal suspend fun sealSigned(
+        key: ByteArray,
+        context: String,
+        scopeId: String,
+        epochId: String,
+        messageId: String,
+        senderId: String,
+        messageType: String,
+        timestamp: Long,
+        fields: List<String>
+    ): SignedCiphertext {
+        val me = requireIdentity(senderId)
+        return try {
+            val aad = E2eeCrypto.contentAad(
+                context, scopeId, epochId, messageId, senderId, messageType, timestamp, me.signPublic
+            )
+            val ciphertext = E2eeCrypto.encrypt(key, E2eeCrypto.encodeStrings(fields), aad)
+            val signature = E2eeCrypto.sign(me.signPrivate, E2eeCrypto.signedData(aad, ciphertext))
+            SignedCiphertext(encode(ciphertext), me.signPublicB64, encode(signature))
+        } catch (e: GeneralSecurityException) {
+            Log.e(TAG, "Encryption failed", e)
+            throw E2eeException("Message could not be encrypted")
+        }
+    }
+
+    /**
+     * Reverses [sealSigned]: checks the signing key belongs to [senderId], verifies the signature,
+     * then decrypts. Fails unless exactly [fieldCount] fields come out.
+     */
+    internal suspend fun openSigned(
+        key: ByteArray,
+        context: String,
+        scopeId: String,
+        epochId: String,
+        messageId: String,
+        senderId: String,
+        messageType: String,
+        timestamp: Long,
+        ciphertextB64: String,
+        signKeyB64: String,
+        signatureB64: String,
+        myUid: String,
+        fieldCount: Int
+    ): OpenedFields {
+        val me = identityFor(myUid)
+        val signKey = decodeKey(signKeyB64) ?: return OpenedFields.Failed(TEXT_UNTRUSTED_KEY)
+        if (!isTrustedPeerKey(me, senderId, signKeyB64, KeyKind.SIGNING)) {
+            Log.w(TAG, "Rejected $messageId: unknown signing key for $senderId")
+            return OpenedFields.Failed(TEXT_UNTRUSTED_KEY)
+        }
+
+        return try {
+            val ciphertext = decode(ciphertextB64)
+            val aad = E2eeCrypto.contentAad(
+                context, scopeId, epochId, messageId, senderId, messageType, timestamp, signKey
+            )
+            if (!E2eeCrypto.verify(signKey, decode(signatureB64), E2eeCrypto.signedData(aad, ciphertext))) {
+                Log.w(TAG, "Rejected $messageId: bad signature")
+                return OpenedFields.Failed(TEXT_UNDECRYPTABLE)
+            }
+            val fields = E2eeCrypto.decodeStrings(E2eeCrypto.decrypt(key, ciphertext, aad))
+            if (fields.size != fieldCount) OpenedFields.Failed(TEXT_UNDECRYPTABLE) else OpenedFields.Ok(fields)
+        } catch (e: GeneralSecurityException) {
+            Log.w(TAG, "Rejected $messageId: authentication failed")
+            OpenedFields.Failed(TEXT_UNDECRYPTABLE)
+        } catch (e: IllegalArgumentException) {
+            Log.w(TAG, "Rejected $messageId: malformed ciphertext")
+            OpenedFields.Failed(TEXT_UNDECRYPTABLE)
         }
     }
 
     // ---------------------------------------------------------------- keys
 
+    /** This device's identity for [uid], making sure its public keys are published. */
+    internal fun requireIdentity(uid: String): Identity {
+        onSignedIn(uid)
+        return identityFor(uid)
+    }
+
     @Synchronized
-    private fun identityFor(uid: String): Identity {
+    internal fun identityFor(uid: String): Identity {
         identity?.let { if (it.uid == uid) return it }
-        val privateKey = vault.loadPrivateKey(uid)
+
+        val dhPrivate = vault.loadPrivateKey(uid)
             ?: E2eeCrypto.generatePrivateKey().also {
                 vault.savePrivateKey(uid, it)
-                Log.i(TAG, "Generated a new key pair for this device")
+                Log.i(TAG, "Generated a new key-exchange key pair for this device")
             }
+        val signPrivate = vault.loadSigningKey(uid)
+            ?: E2eeCrypto.generateSigningKeyPair().privateKey.also {
+                vault.saveSigningKey(uid, it)
+                Log.i(TAG, "Generated a new signing key pair for this device")
+            }
+
         conversationKeys.clear()
-        return Identity(uid, privateKey, E2eeCrypto.publicKeyOf(privateKey)).also { identity = it }
+        return Identity(
+            uid, dhPrivate, E2eeCrypto.publicKeyOf(dhPrivate),
+            signPrivate, E2eeCrypto.signingPublicKeyOf(signPrivate)
+        ).also { identity = it }
     }
 
     /**
-     * A contact's key is trusted if the directory (`user/{uid}/publicKey`) has shown it for that
-     * contact, now or in the past. Keys that only appear inside a message are never trusted.
+     * A contact's public key, from the watched cache if available. With [fresh] the directory is
+     * asked first. Returns null if the contact has not published a valid key.
      */
-    private suspend fun isTrustedPeerKey(me: Identity, peerUid: String, keyB64: String): Boolean {
-        if (peerUid == me.uid) return keyB64 == me.publicKeyB64
-        if (currentPeerKeys[peerUid] == keyB64 || vault.isKnownPeerKey(peerUid, keyB64)) return true
+    internal suspend fun peerKey(peerUid: String, kind: KeyKind, fresh: Boolean): String? {
+        val cached = currentPeerKeys["${kind.field}|$peerUid"]
+        return if (fresh || cached == null) fetchPeerKey(peerUid, kind) ?: cached else cached
+    }
 
-        val lookup = "$peerUid|$keyB64"
+    /**
+     * A contact's key is trusted if the directory (`user/{uid}`) has shown it for that contact, now
+     * or in the past. Keys that only appear inside a message are never trusted.
+     */
+    private suspend fun isTrustedPeerKey(
+        me: Identity,
+        peerUid: String,
+        keyB64: String,
+        kind: KeyKind
+    ): Boolean {
+        if (peerUid == me.uid) {
+            return keyB64 == (if (kind == KeyKind.DH) me.dhPublicB64 else me.signPublicB64)
+        }
+        if (currentPeerKeys["${kind.field}|$peerUid"] == keyB64 ||
+            vault.isKnownPeerKey(peerUid, keyB64, kind.field)
+        ) return true
+
+        val lookup = "${kind.field}|$peerUid|$keyB64"
         if (lookup in rejectedPeerKeys) return false
         // The contact may have changed keys since we last looked: ask the directory once.
-        if (fetchPeerKey(peerUid) == keyB64) return true
+        if (fetchPeerKey(peerUid, kind) == keyB64) return true
         rejectedPeerKeys.add(lookup)
         return false
     }
 
-    private suspend fun fetchPeerKey(peerUid: String): String? = suspendCoroutine { cont ->
-        userRef.child(peerUid).child("publicKey").get()
+    private suspend fun fetchPeerKey(peerUid: String, kind: KeyKind): String? = suspendCoroutine { cont ->
+        userRef.child(peerUid).child(kind.field).get()
             .addOnSuccessListener { snapshot ->
                 val keyB64 = snapshot.value as? String
                 if (keyB64 != null && decodeKey(keyB64) != null) {
-                    rememberPeerKey(peerUid, keyB64)
+                    rememberPeerKey(peerUid, keyB64, kind)
                     cont.resume(keyB64)
                 } else {
                     // Missing, or still the old RSA key from before E2EE was enabled.
@@ -374,18 +520,18 @@ object E2eeManager {
                 }
             }
             .addOnFailureListener { e ->
-                Log.w(TAG, "Could not fetch key of $peerUid: ${e.message}")
+                Log.w(TAG, "Could not fetch ${kind.field} of $peerUid: ${e.message}")
                 cont.resume(null)
             }
     }
 
-    private fun rememberPeerKey(peerUid: String, keyB64: String) {
-        val previous = currentPeerKeys.put(peerUid, keyB64)
+    private fun rememberPeerKey(peerUid: String, keyB64: String, kind: KeyKind) {
+        val previous = currentPeerKeys.put("${kind.field}|$peerUid", keyB64)
         if (previous != null && previous != keyB64) {
-            Log.i(TAG, "Encryption key of $peerUid changed")
+            Log.i(TAG, "${kind.field} of $peerUid changed")
         }
-        rejectedPeerKeys.remove("$peerUid|$keyB64")
-        vault.addKnownPeerKey(peerUid, keyB64)
+        rejectedPeerKeys.remove("${kind.field}|$peerUid|$keyB64")
+        vault.addKnownPeerKey(peerUid, keyB64, kind.field)
     }
 
     private fun conversationKey(
@@ -393,8 +539,8 @@ object E2eeManager {
         peerUid: String,
         peerKey: ByteArray,
         peerKeyB64: String
-    ): ByteArray = conversationKeys.getOrPut("${me.publicKeyB64}|$peerUid|$peerKeyB64") {
-        E2eeCrypto.conversationKey(me.uid, me.privateKey, peerUid, peerKey)
+    ): ByteArray = conversationKeys.getOrPut("${me.dhPublicB64}|$peerUid|$peerKeyB64") {
+        E2eeCrypto.conversationKey(me.uid, me.dhPrivate, peerUid, peerKey)
     }
 
     private fun decodeKey(keyB64: String): ByteArray? = try {
@@ -403,6 +549,6 @@ object E2eeManager {
         null
     }
 
-    private fun encode(bytes: ByteArray): String = Base64.encodeToString(bytes, Base64.NO_WRAP)
-    private fun decode(text: String): ByteArray = Base64.decode(text, Base64.NO_WRAP)
+    internal fun encode(bytes: ByteArray): String = Base64.encodeToString(bytes, Base64.NO_WRAP)
+    internal fun decode(text: String): ByteArray = Base64.decode(text, Base64.NO_WRAP)
 }
