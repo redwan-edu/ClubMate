@@ -446,12 +446,7 @@ fun TeamScreen(
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Text("Meet the team", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.padding(start = 4.dp, top = 4.dp))
-            Text(
-                "The people behind ClubMate, a 3rd year project: a club messenger with end-to-end encryption.",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(start = 4.dp, end = 4.dp, bottom = 6.dp)
-            )
+            
             members.forEach { MemberTile(it, onEmail, onOpenLink, Modifier.fillMaxWidth()) }
             ProjectTile(members.size, appVersion, Modifier.fillMaxWidth())
         }
@@ -611,7 +606,7 @@ private fun LinkedInBadge(modifier: Modifier, glyph: Color, background: Color, c
 
 val SampleTeam = listOf(
     TeamMember(
-        "Redwan Hussain", "Main developer · Project manager",
+        "Redwan Hussain", "Project manager",
         "Built the app and its end-to-end encryption, and led the project from plan to release.",
         "redwan491560@gmail.com", "https://www.linkedin.com/in/redwan-hussain-edu/", AvatarColors[0]
     ),

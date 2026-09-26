@@ -94,13 +94,8 @@ fun ChannelsTab(
     ) {
         TabHeader("Channels")
         Column(Modifier.padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text(
-                "Private channels are password-protected rooms without accounts or member lists.",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Feature(Icons.Rounded.Key, "The password is the key", "Messages are encrypted with a key made from it. Share it only in person.")
-            Feature(Icons.Rounded.Timer, "Messages vanish", "Messages are deleted once they've been read and the reader leaves.")
+            Feature(Icons.Rounded.Key, "The password is the key", "Messages are encrypted with a key, share it wisely.")
+            Feature(Icons.Rounded.Timer, "Messages vanish", "Messages deletes once they've been read and the reader leaves.")
 
             Text("Join a channel", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 12.dp))
             AppTextField(channelId, onChannelIdChange, "Channel ID", leadingIcon = Icons.Rounded.Tag)

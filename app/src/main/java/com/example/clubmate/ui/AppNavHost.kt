@@ -319,7 +319,7 @@ private fun TeamRoute(onBack: () -> Unit) {
     val context = LocalContext.current
     val team = listOf(
         TeamMember(
-            "Redwan Hussain", "Main developer · Project manager",
+            "Redwan Hussain", "Project manager",
             "Built the app and its end-to-end encryption, and led the project from plan to release.",
             "redwan491560@gmail.com", "https://www.linkedin.com/in/redwan-hussain-edu/",
             color = AvatarColors[0], photo = painterResource(R.drawable.redwan)
