@@ -47,6 +47,7 @@ import com.example.clubmate.ui.group.NewPostRoute
 import com.example.clubmate.ui.group.NoticeBoardRoute
 import com.example.clubmate.ui.home.HomeRoute
 import com.example.clubmate.ui.settings.PrivacyRoute
+import com.example.clubmate.ui.settings.appVersionName
 import com.example.clubmate.ui.settings.ProfileRoute
 import com.example.clubmate.ui.settings.SettingsTabRoute
 import com.example.clubmate.ui.settings.TeamMember
@@ -323,6 +324,7 @@ private fun TeamRoute(onBack: () -> Unit) {
     )
     TeamScreen(
         members = team,
+        appVersion = appVersionName(context),
         onEmail = { email ->
             try {
                 context.startActivity(Intent(Intent.ACTION_SENDTO, Uri.parse("mailto:$email")))

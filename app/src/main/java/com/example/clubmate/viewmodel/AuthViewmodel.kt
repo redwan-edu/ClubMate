@@ -57,14 +57,19 @@ class AuthViewModel : ViewModel() {
             if (currentUser.isEmailVerified) {
                 E2eeManager.onSignedIn(currentUser.uid)
                 _authState.value = Status.Authenticated
-                fetchUserData(currentUser.uid) { userData ->
-                    _userData.value = userData
-                }
+                loadUserData(currentUser.uid)
             } else {
                 _authState.value = Status.Error("Please verify your email before logging in")
             }
         } else {
             _authState.value = Status.NotAuthenticated
+        }
+    }
+
+    /** Refreshes [userData] from the directory; profile and settings screens read from it. */
+    private fun loadUserData(uid: String) {
+        fetchUserData(uid) { userData ->
+            _userData.value = userData
         }
     }
 
@@ -88,6 +93,7 @@ class AuthViewModel : ViewModel() {
 
                             _authState.value = Status.Authenticated
                             _currentUser.value = _auth.currentUser
+                            loadUserData(curUser.uid)
                         } else {
                             _authState.value =
                                 Status.Error("Please verify your email before logging in")
@@ -170,6 +176,13 @@ class AuthViewModel : ViewModel() {
                                 uid = user.uid
                             ) {
                                 _currentUser.value = user
+                                // populate right away so a screen shown before the next login (or
+                                // a flow that skips it) still has a name, email and photo to show
+                                _userData.value = Routes.UserModel(
+                                    uid = user.uid, email = email, username = userName, phone = phone,
+                                    publicKey = E2eeManager.publicKeyFor(user.uid),
+                                    signingKey = E2eeManager.signingKeyFor(user.uid)
+                                )
                                 onClick(true)
                             }
                         } else {

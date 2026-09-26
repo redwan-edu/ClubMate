@@ -1,5 +1,6 @@
 package com.example.clubmate.ui.settings
 
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.widget.Toast
@@ -8,6 +9,7 @@ import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -37,6 +39,7 @@ import androidx.compose.material.icons.rounded.Phone
 import androidx.compose.material.icons.rounded.PhotoCamera
 import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.material.icons.rounded.VisibilityOff
+import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -69,6 +72,7 @@ import com.example.clubmate.ui.components.BrandMark
 import com.example.clubmate.ui.components.ConfirmDialog
 import com.example.clubmate.ui.components.InfoRow
 import com.example.clubmate.ui.components.ListDivider
+import com.example.clubmate.ui.components.Pill
 import com.example.clubmate.ui.components.SectionHeader
 import com.example.clubmate.ui.components.SettingsRow
 import com.example.clubmate.ui.components.TabHeader
@@ -77,6 +81,13 @@ import com.example.clubmate.viewmodel.AuthViewModel
 
 /** Where "Report a problem" sends its email. */
 const val SUPPORT_EMAIL = "redwan491560@gmail.com"
+
+/** The app's version name (e.g. "1.0"), or "" if it can't be read. */
+fun appVersionName(context: Context): String = try {
+    context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: ""
+} catch (e: Exception) {
+    ""
+}
 
 // ---------------------------------------------------------------- settings tab
 
@@ -145,13 +156,7 @@ fun SettingsTabRoute(
     val context = LocalContext.current
     val user by authViewModel.userData.collectAsState()
     var confirmSignOut by remember { mutableStateOf(false) }
-    val version = remember {
-        try {
-            context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: ""
-        } catch (e: Exception) {
-            ""
-        }
-    }
+    val version = remember { appVersionName(context) }
 
     SettingsTab(
         name = user?.username.orEmpty(),
@@ -389,20 +394,46 @@ fun PrivacyRoute(myUid: String, onBack: () -> Unit) {
 data class TeamMember(val name: String, val role: String, val email: String, val photo: Painter? = null, val zoom: Float = 1.1f)
 
 @Composable
-fun TeamScreen(members: List<TeamMember>, onEmail: (String) -> Unit, onBack: () -> Unit) {
+fun TeamScreen(members: List<TeamMember>, appVersion: String, onEmail: (String) -> Unit, onBack: () -> Unit) {
     Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
         AppTopBar(title = "The team", onBack = onBack)
         Column(Modifier.verticalScroll(rememberScrollState()).padding(bottom = 32.dp)) {
-            Text(
-                "ClubMate was built as a 3rd year project: a club messenger with end-to-end encryption.",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)
-            )
-            Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            TeamHeader(memberCount = members.size, appVersion = appVersion)
+            SectionHeader("Development team")
+            Column(Modifier.padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 members.forEach { member -> TeamCard(member, onEmail) }
             }
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "Made with Jetpack Compose, Firebase and end-to-end encryption.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 32.dp, vertical = 16.dp)
+            )
         }
+    }
+}
+
+@Composable
+private fun TeamHeader(memberCount: Int, appVersion: String) {
+    Column(
+        Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 20.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        BrandMark(size = 56.dp)
+        Spacer(Modifier.height(16.dp))
+        Text("Built by $memberCount students", style = MaterialTheme.typography.titleLarge)
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "ClubMate is a 3rd year project: a club messenger with end-to-end encryption, " +
+                "built from the ground up by a small student team.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center
+        )
+        Spacer(Modifier.height(12.dp))
+        Pill("Version $appVersion")
     }
 }
 
@@ -412,28 +443,39 @@ private fun TeamCard(member: TeamMember, onEmail: (String) -> Unit) {
         Modifier
             .fillMaxWidth()
             .clip(MaterialTheme.shapes.large)
-            .background(MaterialTheme.colorScheme.surfaceContainer)
-            .padding(16.dp),
+            .background(MaterialTheme.colorScheme.surface)
+            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, MaterialTheme.shapes.large)
+            .padding(start = 16.dp, end = 8.dp, top = 14.dp, bottom = 14.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         if (member.photo != null) {
             Image(
                 member.photo, contentDescription = member.name, contentScale = ContentScale.Crop,
                 modifier = Modifier
-                    .size(56.dp)
+                    .size(60.dp)
                     .clip(CircleShape)
+                    .border(2.dp, MaterialTheme.colorScheme.surfaceContainerHighest, CircleShape)
                     .graphicsLayer { scaleX = member.zoom; scaleY = member.zoom }
             )
         } else {
-            Avatar(member.name, size = 56.dp)
+            Avatar(member.name, size = 60.dp)
         }
         Spacer(Modifier.width(16.dp))
         Column(Modifier.weight(1f)) {
             Text(member.name, style = MaterialTheme.typography.titleMedium)
-            Text(member.role, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
-            Text(member.email, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(Modifier.height(4.dp))
+            Pill(member.role, emphasized = true)
+            Spacer(Modifier.height(6.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    Icons.Rounded.AlternateEmail, contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(14.dp)
+                )
+                Spacer(Modifier.width(4.dp))
+                Text(member.email, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
         }
-        IconButton(onClick = { onEmail(member.email) }) {
+        FilledTonalIconButton(onClick = { onEmail(member.email) }) {
             Icon(Icons.Rounded.MailOutline, contentDescription = "Email ${member.name}")
         }
     }
@@ -469,5 +511,5 @@ fun PrivacyPreview() = ClubMateTheme {
 @Preview
 @Composable
 fun TeamPreview() = ClubMateTheme {
-    TeamScreen(SampleTeam, {}, {})
+    TeamScreen(SampleTeam, "1.0", {}, {})
 }
