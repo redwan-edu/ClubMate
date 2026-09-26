@@ -13,9 +13,12 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -25,6 +28,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.Logout
@@ -41,10 +45,13 @@ import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.material.icons.rounded.VisibilityOff
 import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -54,17 +61,26 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.example.clubmate.e2ee.E2eeManager
 import com.example.clubmate.ui.components.AppTopBar
 import com.example.clubmate.ui.components.Avatar
@@ -390,104 +406,288 @@ fun PrivacyRoute(myUid: String, onBack: () -> Unit) {
 
 // ---------------------------------------------------------------- team
 
-/** A developer on the team page; [zoom] frames the photo inside the circle. */
-data class TeamMember(val name: String, val role: String, val email: String, val photo: Painter? = null, val zoom: Float = 1.1f)
+/**
+ * A person on the team page. [contribution] is one line on what they built; [zoom] frames the
+ * photo inside its circle.
+ */
+data class TeamMember(
+    val name: String,
+    val role: String,
+    val contribution: String,
+    val email: String,
+    val linkedIn: String,
+    val photo: Painter? = null,
+    val zoom: Float = 1f
+)
 
+/** "https://www.linkedin.com/in/someone/" -> "in/someone". */
+fun linkedInHandle(url: String): String =
+    url.substringAfter("linkedin.com/", url).trim('/').ifBlank { url }
+
+private val LinkedInBlue = Color(0xFF0A66C2)
+
+/** Second stop of the brand gradient (see BrandMark). */
+private val BrandViolet = Color(0xFF6C4DF0)
+private val TileShape = RoundedCornerShape(24.dp)
+
+/**
+ * The team as a bento grid: the lead in a wide feature tile, the others in smaller tiles, and a
+ * project tile to close the grid. Every tile lists the person's email and LinkedIn, both tappable.
+ */
 @Composable
-fun TeamScreen(members: List<TeamMember>, appVersion: String, onEmail: (String) -> Unit, onBack: () -> Unit) {
+fun TeamScreen(
+    members: List<TeamMember>,
+    appVersion: String,
+    onEmail: (String) -> Unit,
+    onOpenLink: (String) -> Unit,
+    onBack: () -> Unit
+) {
+    val lead = members.firstOrNull()
+    val others = members.drop(1)
     Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
         AppTopBar(title = "The team", onBack = onBack)
-        Column(Modifier.verticalScroll(rememberScrollState()).padding(bottom = 32.dp)) {
-            TeamHeader(memberCount = members.size, appVersion = appVersion)
-            SectionHeader("Development team")
-            Column(Modifier.padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                members.forEach { member -> TeamCard(member, onEmail) }
-            }
-            Spacer(Modifier.height(8.dp))
+        Column(
+            Modifier
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 16.dp)
+                .padding(top = 4.dp, bottom = 32.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Text("Meet the team", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.padding(start = 4.dp, top = 4.dp))
             Text(
-                "Made with Jetpack Compose, Firebase and end-to-end encryption.",
-                style = MaterialTheme.typography.bodySmall,
+                "The people behind ClubMate, a 3rd year project: a club messenger with end-to-end encryption.",
+                style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                textAlign = TextAlign.Center,
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 32.dp, vertical = 16.dp)
+                modifier = Modifier.padding(start = 4.dp, end = 4.dp, bottom = 6.dp)
             )
+            if (lead != null) LeadTile(lead, onEmail, onOpenLink)
+            // two per row; an odd one out shares its row with the project tile
+            others.chunked(2).forEach { row ->
+                Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    row.forEach { MemberTile(it, onEmail, onOpenLink, Modifier.weight(1f).fillMaxHeight()) }
+                    if (row.size == 1) ProjectTile(members.size, appVersion, Modifier.weight(1f).fillMaxHeight())
+                }
+            }
+            if (others.size % 2 == 0) ProjectTile(members.size, appVersion, Modifier.fillMaxWidth())
         }
     }
 }
 
 @Composable
-private fun TeamHeader(memberCount: Int, appVersion: String) {
+private fun MemberPhoto(member: TeamMember, size: Dp, ring: Color) {
+    if (member.photo != null) {
+        Image(
+            member.photo, contentDescription = member.name, contentScale = ContentScale.Crop,
+            modifier = Modifier
+                .size(size)
+                .border(3.dp, ring, CircleShape)
+                .padding(3.dp)
+                .clip(CircleShape)
+                .graphicsLayer { scaleX = member.zoom; scaleY = member.zoom }
+        )
+    } else {
+        Avatar(member.name, size = size)
+    }
+}
+
+/** Wide feature tile for the lead, on the accent colour. */
+@Composable
+private fun LeadTile(member: TeamMember, onEmail: (String) -> Unit, onOpenLink: (String) -> Unit) {
+    val onAccent = MaterialTheme.colorScheme.onPrimary
     Column(
-        Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 20.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
+        Modifier
+            .fillMaxWidth()
+            .clip(TileShape)
+            .background(
+                Brush.linearGradient(listOf(MaterialTheme.colorScheme.primary, BrandViolet))
+            )
+            .padding(20.dp)
     ) {
-        BrandMark(size = 56.dp)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            MemberPhoto(member, 84.dp, onAccent.copy(alpha = 0.35f))
+            Spacer(Modifier.width(16.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    "LEAD",
+                    style = MaterialTheme.typography.labelSmall.copy(letterSpacing = 1.5.sp),
+                    color = onAccent.copy(alpha = 0.75f)
+                )
+                Text(member.name, style = MaterialTheme.typography.titleLarge, color = onAccent)
+                Text(member.role, style = MaterialTheme.typography.bodyMedium, color = onAccent.copy(alpha = 0.9f))
+            }
+        }
+        Spacer(Modifier.height(14.dp))
+        Text(member.contribution, style = MaterialTheme.typography.bodyMedium, color = onAccent.copy(alpha = 0.9f))
         Spacer(Modifier.height(16.dp))
-        Text("Built by $memberCount students", style = MaterialTheme.typography.titleLarge)
-        Spacer(Modifier.height(6.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            ContactChip(
+                label = "Email", icon = { Icon(Icons.Rounded.MailOutline, null, Modifier.size(16.dp)) },
+                container = onAccent.copy(alpha = 0.16f), content = onAccent,
+                modifier = Modifier.weight(1f)
+            ) { onEmail(member.email) }
+            ContactChip(
+                label = "LinkedIn", icon = { LinkedInBadge(Modifier.size(16.dp), onAccent, MaterialTheme.colorScheme.primary) },
+                container = onAccent.copy(alpha = 0.16f), content = onAccent,
+                modifier = Modifier.weight(1f)
+            ) { onOpenLink(member.linkedIn) }
+        }
+        Spacer(Modifier.height(12.dp))
+        ContactLine(Icons.Rounded.AlternateEmail, member.email, onAccent.copy(alpha = 0.85f)) { onEmail(member.email) }
+        ContactLine(null, linkedInHandle(member.linkedIn), onAccent.copy(alpha = 0.85f)) { onOpenLink(member.linkedIn) }
+    }
+}
+
+/** Smaller tile: photo, name, role, what they did and how to reach them. */
+@Composable
+private fun MemberTile(member: TeamMember, onEmail: (String) -> Unit, onOpenLink: (String) -> Unit, modifier: Modifier) {
+    Column(
+        modifier
+            .clip(TileShape)
+            .background(MaterialTheme.colorScheme.surfaceContainer)
+            .padding(16.dp)
+    ) {
+        MemberPhoto(member, 60.dp, MaterialTheme.colorScheme.surface)
+        Spacer(Modifier.height(12.dp))
+        Text(member.name, style = MaterialTheme.typography.titleMedium)
+        Spacer(Modifier.height(4.dp))
+        Pill(member.role, emphasized = true)
+        Spacer(Modifier.height(8.dp))
         Text(
-            "ClubMate is a 3rd year project: a club messenger with end-to-end encryption, " +
-                "built from the ground up by a small student team.",
-            style = MaterialTheme.typography.bodyMedium,
+            member.contribution,
+            style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            textAlign = TextAlign.Center
+            modifier = Modifier.weight(1f, fill = true)
         )
         Spacer(Modifier.height(12.dp))
-        Pill("Version $appVersion")
+        val muted = MaterialTheme.colorScheme.onSurfaceVariant
+        // narrow tile: let a long address wrap after the "@" instead of being cut off
+        ContactLine(Icons.Rounded.AlternateEmail, member.email.replace("@", "@\u200B"), muted, maxLines = 2) { onEmail(member.email) }
+        ContactLine(null, linkedInHandle(member.linkedIn), muted) { onOpenLink(member.linkedIn) }
+        Spacer(Modifier.height(10.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FilledTonalIconButton(onClick = { onEmail(member.email) }, modifier = Modifier.size(40.dp), colors = tileButtonColors()) {
+                Icon(Icons.Rounded.MailOutline, contentDescription = "Email ${member.name}", modifier = Modifier.size(20.dp))
+            }
+            FilledTonalIconButton(onClick = { onOpenLink(member.linkedIn) }, modifier = Modifier.size(40.dp), colors = tileButtonColors()) {
+                LinkedInBadge(Modifier.size(20.dp), Color.White, LinkedInBlue, contentDescription = "${member.name} on LinkedIn")
+            }
+        }
     }
 }
 
 @Composable
-private fun TeamCard(member: TeamMember, onEmail: (String) -> Unit) {
+private fun tileButtonColors() = IconButtonDefaults.filledTonalIconButtonColors(
+    containerColor = MaterialTheme.colorScheme.surface,
+    contentColor = MaterialTheme.colorScheme.onSurface
+)
+
+/** Closing tile about the project itself. */
+@Composable
+private fun ProjectTile(memberCount: Int, appVersion: String, modifier: Modifier) {
+    Column(
+        modifier
+            .clip(TileShape)
+            .background(MaterialTheme.colorScheme.primaryContainer)
+            .padding(16.dp)
+    ) {
+        BrandMark(size = 44.dp)
+        Spacer(Modifier.height(12.dp))
+        Text("ClubMate", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onPrimaryContainer)
+        Text(
+            if (appVersion.isBlank()) "3rd year project" else "Version $appVersion · 3rd year project",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f)
+        )
+        Spacer(Modifier.weight(1f).height(12.dp))
+        Text("$memberCount", style = MaterialTheme.typography.displaySmall, color = MaterialTheme.colorScheme.primary)
+        Text("contributors", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onPrimaryContainer)
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "Jetpack Compose · Firebase\nX3DH + Double Ratchet",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f)
+        )
+    }
+}
+
+@Composable
+private fun ContactChip(
+    label: String,
+    icon: @Composable () -> Unit,
+    container: Color,
+    content: Color,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier
+            .clip(CircleShape)
+            .background(container)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.Center
+    ) {
+        CompositionLocalProvider(LocalContentColor provides content) { icon() }
+        Spacer(Modifier.width(8.dp))
+        Text(label, style = MaterialTheme.typography.labelLarge, color = content)
+    }
+}
+
+/** One tappable contact detail: an icon (or the LinkedIn mark when [icon] is null) and the text. */
+@Composable
+private fun ContactLine(icon: ImageVector?, text: String, color: Color, maxLines: Int = 1, onClick: () -> Unit) {
     Row(
         Modifier
             .fillMaxWidth()
-            .clip(MaterialTheme.shapes.large)
-            .background(MaterialTheme.colorScheme.surface)
-            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, MaterialTheme.shapes.large)
-            .padding(start = 16.dp, end = 8.dp, top = 14.dp, bottom = 14.dp),
-        verticalAlignment = Alignment.CenterVertically
+            .clip(MaterialTheme.shapes.small)
+            .clickable(onClick = onClick)
+            .padding(vertical = 3.dp),
+        verticalAlignment = if (maxLines > 1) Alignment.Top else Alignment.CenterVertically
     ) {
-        if (member.photo != null) {
-            Image(
-                member.photo, contentDescription = member.name, contentScale = ContentScale.Crop,
-                modifier = Modifier
-                    .size(60.dp)
-                    .clip(CircleShape)
-                    .border(2.dp, MaterialTheme.colorScheme.surfaceContainerHighest, CircleShape)
-                    .graphicsLayer { scaleX = member.zoom; scaleY = member.zoom }
-            )
+        if (icon != null) {
+            Icon(icon, contentDescription = null, tint = color, modifier = Modifier.padding(top = 2.dp).size(14.dp))
         } else {
-            Avatar(member.name, size = 60.dp)
+            LinkedInBadge(Modifier.size(14.dp), Color.White, LinkedInBlue)
         }
-        Spacer(Modifier.width(16.dp))
-        Column(Modifier.weight(1f)) {
-            Text(member.name, style = MaterialTheme.typography.titleMedium)
-            Spacer(Modifier.height(4.dp))
-            Pill(member.role, emphasized = true)
-            Spacer(Modifier.height(6.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    Icons.Rounded.AlternateEmail, contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(14.dp)
-                )
-                Spacer(Modifier.width(4.dp))
-                Text(member.email, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-        }
-        FilledTonalIconButton(onClick = { onEmail(member.email) }) {
-            Icon(Icons.Rounded.MailOutline, contentDescription = "Email ${member.name}")
-        }
+        Spacer(Modifier.width(6.dp))
+        Text(text, style = MaterialTheme.typography.bodySmall, color = color, maxLines = maxLines, overflow = TextOverflow.Ellipsis)
+    }
+}
+
+/** The LinkedIn "in" mark, drawn so no brand asset has to ship with the app. */
+@Composable
+private fun LinkedInBadge(modifier: Modifier, glyph: Color, background: Color, contentDescription: String? = null) {
+    BoxWithConstraints(
+        modifier
+            .clip(RoundedCornerShape(22))
+            .background(background)
+            .then(if (contentDescription != null) Modifier.semantics { this.contentDescription = contentDescription } else Modifier),
+        contentAlignment = Alignment.Center
+    ) {
+        val px = with(LocalDensity.current) { maxWidth.toSp() }
+        Text(
+            "in",
+            color = glyph,
+            fontWeight = FontWeight.Bold,
+            fontSize = px * 0.62f,
+            lineHeight = px * 0.62f,
+            modifier = Modifier.offset(y = (-0.5).dp)
+        )
     }
 }
 
 // ---------------------------------------------------------------- previews
 
 val SampleTeam = listOf(
-    TeamMember("Redwan Hussain", "Developer", "redwan491560@gmail.com"),
-    TeamMember("Mizanur Rahman", "Developer", "mizan21331@gmail.com"),
-    TeamMember("Tonmoy Chanda", "Developer", "tonmoychanda07@gmail.com"),
-    TeamMember("Abu Adnan Shad", "Developer", "adnanshad1035@gmail.com"),
+    TeamMember(
+        "Redwan Hussain", "Main developer · Project manager",
+        "Built the app and its end-to-end encryption, and led the project from plan to release.",
+        "redwan491560@gmail.com", "https://www.linkedin.com/in/redwan-hussain-edu/"
+    ),
+    TeamMember("Mizanur Rahman", "Database design", "Designed the Firebase data model for chats, groups and channels.", "mizan21331@gmail.com", "https://www.linkedin.com/in/mizanrahmanx/"),
+    TeamMember("Tonmoy Chanda", "UI design", "Shaped the screens, layouts and visual style of the app.", "tonmoychanda07@gmail.com", "https://www.linkedin.com/in/tonmoy-chanda/"),
+    TeamMember("Abu Adnan Shad", "QA testing", "Tested every feature and tracked down bugs before each release.", "adnanshad1035@gmail.com", "https://www.linkedin.com/in/abuadnanshad/"),
 )
 
 @Preview
@@ -511,5 +711,5 @@ fun PrivacyPreview() = ClubMateTheme {
 @Preview
 @Composable
 fun TeamPreview() = ClubMateTheme {
-    TeamScreen(SampleTeam, "1.0", {}, {})
+    TeamScreen(SampleTeam, "1.0", {}, {}, {})
 }

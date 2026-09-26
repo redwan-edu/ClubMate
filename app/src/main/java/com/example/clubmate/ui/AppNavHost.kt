@@ -317,10 +317,30 @@ private fun NavHostController.backToHome() {
 private fun TeamRoute(onBack: () -> Unit) {
     val context = LocalContext.current
     val team = listOf(
-        TeamMember("Redwan Hussain", "Developer", "redwan491560@gmail.com", painterResource(R.drawable.redwan), zoom = 3.3f),
-        TeamMember("Mizanur Rahman", "Developer", "mizan21331@gmail.com", painterResource(R.drawable.mizan)),
-        TeamMember("Tonmoy Chanda", "Developer", "tonmoychanda07@gmail.com", painterResource(R.drawable.tonmoy)),
-        TeamMember("Abu Adnan Shad", "Developer", "adnanshad1035@gmail.com", painterResource(R.drawable.adnan)),
+        TeamMember(
+            "Redwan Hussain", "Main developer · Project manager",
+            "Built the app and its end-to-end encryption, and led the project from plan to release.",
+            "redwan491560@gmail.com", "https://www.linkedin.com/in/redwan-hussain-edu/",
+            painterResource(R.drawable.redwan)
+        ),
+        TeamMember(
+            "Mizanur Rahman", "Database design",
+            "Designed the Firebase data model for chats, groups and channels.",
+            "mizan21331@gmail.com", "https://www.linkedin.com/in/mizanrahmanx/",
+            painterResource(R.drawable.mizan), zoom = 1.1f
+        ),
+        TeamMember(
+            "Tonmoy Chanda", "UI design",
+            "Shaped the screens, layouts and visual style of the app.",
+            "tonmoychanda07@gmail.com", "https://www.linkedin.com/in/tonmoy-chanda/",
+            painterResource(R.drawable.tonmoy), zoom = 1.1f
+        ),
+        TeamMember(
+            "Abu Adnan Shad", "QA testing",
+            "Tested every feature and tracked down bugs before each release.",
+            "adnanshad1035@gmail.com", "https://www.linkedin.com/in/abuadnanshad/",
+            painterResource(R.drawable.adnan), zoom = 1.1f
+        ),
     )
     TeamScreen(
         members = team,
@@ -330,6 +350,13 @@ private fun TeamRoute(onBack: () -> Unit) {
                 context.startActivity(Intent(Intent.ACTION_SENDTO, Uri.parse("mailto:$email")))
             } catch (e: Exception) {
                 Toast.makeText(context, "No email app found", Toast.LENGTH_SHORT).show()
+            }
+        },
+        onOpenLink = { url ->
+            try {
+                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+            } catch (e: Exception) {
+                Toast.makeText(context, "No app can open this link", Toast.LENGTH_SHORT).show()
             }
         },
         onBack = onBack
