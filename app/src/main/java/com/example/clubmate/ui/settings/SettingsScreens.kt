@@ -15,10 +15,8 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -426,9 +424,9 @@ private val LinkedInBlue = Color(0xFF0A66C2)
 private val TileShape = RoundedCornerShape(24.dp)
 
 /**
- * The team as a bento grid: every person gets an equal-size tile in their own colour (no one tile
- * is bigger than another), closed by a tile about the project itself. Each tile lists the person's
- * role, what they built, and their email and LinkedIn, both tappable.
+ * The team as a stack of equal, full-width cards, one person per row, each in their own colour (no
+ * one card is bigger than another), closed by a card about the project itself. Each card lists the
+ * person's role, what they built, and their email and LinkedIn, both tappable.
  */
 @Composable
 fun TeamScreen(
@@ -445,7 +443,7 @@ fun TeamScreen(
                 .verticalScroll(rememberScrollState())
                 .padding(horizontal = 16.dp)
                 .padding(top = 4.dp, bottom = 32.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Text("Meet the team", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.padding(start = 4.dp, top = 4.dp))
             Text(
@@ -454,14 +452,8 @@ fun TeamScreen(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(start = 4.dp, end = 4.dp, bottom = 6.dp)
             )
-            // two equal tiles per row; an odd one out shares its row with the project tile
-            members.chunked(2).forEach { row ->
-                Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    row.forEach { MemberTile(it, onEmail, onOpenLink, Modifier.weight(1f).fillMaxHeight()) }
-                    if (row.size == 1) ProjectTile(members.size, appVersion, Modifier.weight(1f).fillMaxHeight())
-                }
-            }
-            if (members.size % 2 == 0) ProjectTile(members.size, appVersion, Modifier.fillMaxWidth())
+            members.forEach { MemberTile(it, onEmail, onOpenLink, Modifier.fillMaxWidth()) }
+            ProjectTile(members.size, appVersion, Modifier.fillMaxWidth())
         }
     }
 }
@@ -483,7 +475,7 @@ private fun MemberPhoto(member: TeamMember, size: Dp, ring: Color) {
     }
 }
 
-/** One person's tile: photo, name, role, what they built and how to reach them, on their colour. */
+/** One person's full-width card: photo, name, role, what they built and how to reach them. */
 @Composable
 private fun MemberTile(member: TeamMember, onEmail: (String) -> Unit, onOpenLink: (String) -> Unit, modifier: Modifier) {
     val onColor = Color.White
@@ -491,31 +483,33 @@ private fun MemberTile(member: TeamMember, onEmail: (String) -> Unit, onOpenLink
         modifier
             .clip(TileShape)
             .background(member.color)
-            .padding(16.dp)
+            .padding(18.dp)
     ) {
-        MemberPhoto(member, 64.dp, onColor.copy(alpha = 0.35f))
-        Spacer(Modifier.height(12.dp))
-        Text(member.name, style = MaterialTheme.typography.titleMedium, color = onColor)
-        Spacer(Modifier.height(4.dp))
-        AccentPill(member.role, onColor)
-        Spacer(Modifier.height(8.dp))
-        Text(
-            member.contribution,
-            style = MaterialTheme.typography.bodySmall,
-            color = onColor.copy(alpha = 0.9f),
-            modifier = Modifier.weight(1f, fill = true)
-        )
-        Spacer(Modifier.height(12.dp))
-        // narrow tile: let a long address wrap after the "@" instead of being cut off
-        ContactLine(Icons.Rounded.AlternateEmail, member.email.replace("@", "@​"), onColor, maxLines = 2) { onEmail(member.email) }
-        ContactLine(null, linkedInHandle(member.linkedIn), onColor) { onOpenLink(member.linkedIn) }
-        Spacer(Modifier.height(10.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            FilledTonalIconButton(onClick = { onEmail(member.email) }, modifier = Modifier.size(40.dp), colors = tileButtonColors(onColor)) {
-                Icon(Icons.Rounded.MailOutline, contentDescription = "Email ${member.name}", modifier = Modifier.size(20.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            MemberPhoto(member, 72.dp, onColor.copy(alpha = 0.35f))
+            Spacer(Modifier.width(16.dp))
+            Column(Modifier.weight(1f)) {
+                Text(member.name, style = MaterialTheme.typography.titleLarge, color = onColor)
+                Spacer(Modifier.height(6.dp))
+                AccentPill(member.role, onColor)
             }
-            FilledTonalIconButton(onClick = { onOpenLink(member.linkedIn) }, modifier = Modifier.size(40.dp), colors = tileButtonColors(onColor)) {
-                LinkedInBadge(Modifier.size(20.dp), Color.White, LinkedInBlue, contentDescription = "${member.name} on LinkedIn")
+        }
+        Spacer(Modifier.height(14.dp))
+        Text(member.contribution, style = MaterialTheme.typography.bodyMedium, color = onColor.copy(alpha = 0.9f))
+        Spacer(Modifier.height(14.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                ContactLine(Icons.Rounded.AlternateEmail, member.email, onColor) { onEmail(member.email) }
+                ContactLine(null, linkedInHandle(member.linkedIn), onColor) { onOpenLink(member.linkedIn) }
+            }
+            Spacer(Modifier.width(12.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilledTonalIconButton(onClick = { onEmail(member.email) }, modifier = Modifier.size(40.dp), colors = tileButtonColors(onColor)) {
+                    Icon(Icons.Rounded.MailOutline, contentDescription = "Email ${member.name}", modifier = Modifier.size(20.dp))
+                }
+                FilledTonalIconButton(onClick = { onOpenLink(member.linkedIn) }, modifier = Modifier.size(40.dp), colors = tileButtonColors(onColor)) {
+                    LinkedInBadge(Modifier.size(20.dp), Color.White, LinkedInBlue, contentDescription = "${member.name} on LinkedIn")
+                }
             }
         }
     }
