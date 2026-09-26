@@ -3,8 +3,6 @@
 A private chat app for university clubs. You run it on your own free Firebase account, so your club's
 messages live in a place you control, and they are end-to-end encrypted on top of that.
 
-![ClubMate screens](docs/ui/overview.png)
-
 ## Why we built it
 
 Our clubs ran on a mix of WhatsApp groups, Messenger chats and notice boards pinned in someone's
@@ -116,18 +114,18 @@ later, download the file again from **Project settings → Your apps**.
 1. Sign up for a free account at [cloudinary.com](https://cloudinary.com).
 2. In the Cloudinary console, open **Settings → API Keys**. Note three things: your **Cloud name**,
    your **API Key** and your **API Secret**.
-3. In the main `ClubMate` folder, open the file called `local.properties`. Android Studio creates it
-   the first time you open the project. If it isn't there, create a plain text file with that name.
-   Add these three lines at the end, with your own values:
+3. In the main `ClubMate` folder, open the file called `cloudinary.properties` and paste your
+   values after the `=` signs:
 
    ```
-   cloudinary.cloudName=your-cloud-name
-   cloudinary.apiKey=your-api-key
-   cloudinary.apiSecret=your-api-secret
+   cloudName=your-cloud-name
+   apiKey=your-api-key
+   apiSecret=your-api-secret
    ```
 
-`local.properties` and `google-services.json` stay on your computer. They are never uploaded to
-GitHub, so your keys stay private even if you publish your own copy of the code.
+Keep your filled-in `cloudinary.properties` to yourself. If you publish your own copy of the code,
+empty the three values first. `google-services.json` is never uploaded to GitHub, so you don't need
+to worry about that one.
 
 ### Step 4: Install it on your phone
 
@@ -181,7 +179,7 @@ To check that no one is listening in on a chat, open the other person's profile 
 | "No matching client found for package name" | The package name in Firebase must be exactly `com.example.clubmate`. Add the app again with that name and download a new file. |
 | "Please verify your email before logging in" | Click the link in the verification email. Look in spam. |
 | Chats don't load, or "Permission denied" | Check that the Realtime Database exists and that you published the rules in step 2. |
-| Photos won't upload | Check the three Cloudinary lines in `local.properties` for typos, then run the app again. |
+| Photos won't upload | Check the three values in `cloudinary.properties` for typos, then run the app again. |
 | The phone doesn't show up in Android Studio | Try another cable, and accept the USB debugging prompt on the phone. |
 
 ## Make it your own
@@ -190,11 +188,6 @@ To check that no one is listening in on a chat, open the other person's profile 
 - **App icon:** in Android Studio, right-click the `app` folder and choose **New → Image Asset**.
 - **Team page and "Report a problem":** these point to the original team. You'll find them in
   `app/src/main/java/com/example/clubmate/ui/AppNavHost.kt`.
-
-## How the encryption works
-
-For those who want the details, [docs/E2EE_IMPLEMENTATION.md](docs/E2EE_IMPLEMENTATION.md) explains
-how messages, groups, channels and photos are encrypted, and what the server can and can't see.
 
 ## The team
 

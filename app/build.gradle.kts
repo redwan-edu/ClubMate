@@ -8,12 +8,12 @@ plugins {
    alias(libs.plugins.google.gms.google.services)
 }
 
-// Your own Cloudinary account, read from local.properties (never committed).
-val localProps = Properties().apply {
-    val file = rootProject.file("local.properties")
+// Your own Cloudinary account, pasted into cloudinary.properties in the project folder.
+val cloudinary = Properties().apply {
+    val file = rootProject.file("cloudinary.properties")
     if (file.exists()) file.inputStream().use { load(it) }
 }
-fun localProp(key: String): String = localProps.getProperty(key, "")
+fun cloudinaryProp(key: String): String = cloudinary.getProperty(key, "").trim()
 
 android {
     namespace = "com.example.clubmate"
@@ -26,14 +26,13 @@ android {
         versionCode = 1
         versionName = "1.0"
 
-        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
             useSupportLibrary = true
         }
 
-        buildConfigField("String", "CLOUDINARY_CLOUD_NAME", "\"${localProp("cloudinary.cloudName")}\"")
-        buildConfigField("String", "CLOUDINARY_API_KEY", "\"${localProp("cloudinary.apiKey")}\"")
-        buildConfigField("String", "CLOUDINARY_API_SECRET", "\"${localProp("cloudinary.apiSecret")}\"")
+        buildConfigField("String", "CLOUDINARY_CLOUD_NAME", "\"${cloudinaryProp("cloudName")}\"")
+        buildConfigField("String", "CLOUDINARY_API_KEY", "\"${cloudinaryProp("apiKey")}\"")
+        buildConfigField("String", "CLOUDINARY_API_SECRET", "\"${cloudinaryProp("apiSecret")}\"")
     }
 
     buildTypes {
@@ -83,14 +82,7 @@ dependencies {
     implementation(libs.androidx.runtime.livedata)
     implementation(libs.firebase.database.ktx)
     implementation(libs.firebase.database)
-    testImplementation(libs.junit)
-
-    androidTestImplementation(libs.androidx.junit)
-    androidTestImplementation(libs.androidx.espresso.core)
-    androidTestImplementation(platform(libs.androidx.compose.bom))
-    androidTestImplementation(libs.androidx.ui.test.junit4)
     debugImplementation(libs.androidx.ui.tooling)
-    debugImplementation(libs.androidx.ui.test.manifest)
 
 
     // navigation
