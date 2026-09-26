@@ -47,11 +47,9 @@ import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -61,7 +59,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.painter.Painter
@@ -80,7 +77,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.example.clubmate.e2ee.E2eeManager
 import com.example.clubmate.ui.components.AppTopBar
 import com.example.clubmate.ui.components.Avatar
@@ -88,10 +84,10 @@ import com.example.clubmate.ui.components.BrandMark
 import com.example.clubmate.ui.components.ConfirmDialog
 import com.example.clubmate.ui.components.InfoRow
 import com.example.clubmate.ui.components.ListDivider
-import com.example.clubmate.ui.components.Pill
 import com.example.clubmate.ui.components.SectionHeader
 import com.example.clubmate.ui.components.SettingsRow
 import com.example.clubmate.ui.components.TabHeader
+import com.example.clubmate.ui.theme.AvatarColors
 import com.example.clubmate.ui.theme.ClubMateTheme
 import com.example.clubmate.viewmodel.AuthViewModel
 
@@ -407,8 +403,9 @@ fun PrivacyRoute(myUid: String, onBack: () -> Unit) {
 // ---------------------------------------------------------------- team
 
 /**
- * A person on the team page. [contribution] is one line on what they built; [zoom] frames the
- * photo inside its circle.
+ * A person on the team page. [contribution] is one line on what they built; [color] is their tile's
+ * background, so everyone gets equal billing with their own colour; [zoom] frames the photo inside
+ * its circle.
  */
 data class TeamMember(
     val name: String,
@@ -416,6 +413,7 @@ data class TeamMember(
     val contribution: String,
     val email: String,
     val linkedIn: String,
+    val color: Color,
     val photo: Painter? = null,
     val zoom: Float = 1f
 )
@@ -425,14 +423,12 @@ fun linkedInHandle(url: String): String =
     url.substringAfter("linkedin.com/", url).trim('/').ifBlank { url }
 
 private val LinkedInBlue = Color(0xFF0A66C2)
-
-/** Second stop of the brand gradient (see BrandMark). */
-private val BrandViolet = Color(0xFF6C4DF0)
 private val TileShape = RoundedCornerShape(24.dp)
 
 /**
- * The team as a bento grid: the lead in a wide feature tile, the others in smaller tiles, and a
- * project tile to close the grid. Every tile lists the person's email and LinkedIn, both tappable.
+ * The team as a bento grid: every person gets an equal-size tile in their own colour (no one tile
+ * is bigger than another), closed by a tile about the project itself. Each tile lists the person's
+ * role, what they built, and their email and LinkedIn, both tappable.
  */
 @Composable
 fun TeamScreen(
@@ -442,8 +438,6 @@ fun TeamScreen(
     onOpenLink: (String) -> Unit,
     onBack: () -> Unit
 ) {
-    val lead = members.firstOrNull()
-    val others = members.drop(1)
     Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
         AppTopBar(title = "The team", onBack = onBack)
         Column(
@@ -460,15 +454,14 @@ fun TeamScreen(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(start = 4.dp, end = 4.dp, bottom = 6.dp)
             )
-            if (lead != null) LeadTile(lead, onEmail, onOpenLink)
-            // two per row; an odd one out shares its row with the project tile
-            others.chunked(2).forEach { row ->
+            // two equal tiles per row; an odd one out shares its row with the project tile
+            members.chunked(2).forEach { row ->
                 Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     row.forEach { MemberTile(it, onEmail, onOpenLink, Modifier.weight(1f).fillMaxHeight()) }
                     if (row.size == 1) ProjectTile(members.size, appVersion, Modifier.weight(1f).fillMaxHeight())
                 }
             }
-            if (others.size % 2 == 0) ProjectTile(members.size, appVersion, Modifier.fillMaxWidth())
+            if (members.size % 2 == 0) ProjectTile(members.size, appVersion, Modifier.fillMaxWidth())
         }
     }
 }
@@ -490,95 +483,62 @@ private fun MemberPhoto(member: TeamMember, size: Dp, ring: Color) {
     }
 }
 
-/** Wide feature tile for the lead, on the accent colour. */
-@Composable
-private fun LeadTile(member: TeamMember, onEmail: (String) -> Unit, onOpenLink: (String) -> Unit) {
-    val onAccent = MaterialTheme.colorScheme.onPrimary
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .clip(TileShape)
-            .background(
-                Brush.linearGradient(listOf(MaterialTheme.colorScheme.primary, BrandViolet))
-            )
-            .padding(20.dp)
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            MemberPhoto(member, 84.dp, onAccent.copy(alpha = 0.35f))
-            Spacer(Modifier.width(16.dp))
-            Column(Modifier.weight(1f)) {
-                Text(
-                    "LEAD",
-                    style = MaterialTheme.typography.labelSmall.copy(letterSpacing = 1.5.sp),
-                    color = onAccent.copy(alpha = 0.75f)
-                )
-                Text(member.name, style = MaterialTheme.typography.titleLarge, color = onAccent)
-                Text(member.role, style = MaterialTheme.typography.bodyMedium, color = onAccent.copy(alpha = 0.9f))
-            }
-        }
-        Spacer(Modifier.height(14.dp))
-        Text(member.contribution, style = MaterialTheme.typography.bodyMedium, color = onAccent.copy(alpha = 0.9f))
-        Spacer(Modifier.height(16.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            ContactChip(
-                label = "Email", icon = { Icon(Icons.Rounded.MailOutline, null, Modifier.size(16.dp)) },
-                container = onAccent.copy(alpha = 0.16f), content = onAccent,
-                modifier = Modifier.weight(1f)
-            ) { onEmail(member.email) }
-            ContactChip(
-                label = "LinkedIn", icon = { LinkedInBadge(Modifier.size(16.dp), onAccent, MaterialTheme.colorScheme.primary) },
-                container = onAccent.copy(alpha = 0.16f), content = onAccent,
-                modifier = Modifier.weight(1f)
-            ) { onOpenLink(member.linkedIn) }
-        }
-        Spacer(Modifier.height(12.dp))
-        ContactLine(Icons.Rounded.AlternateEmail, member.email, onAccent.copy(alpha = 0.85f)) { onEmail(member.email) }
-        ContactLine(null, linkedInHandle(member.linkedIn), onAccent.copy(alpha = 0.85f)) { onOpenLink(member.linkedIn) }
-    }
-}
-
-/** Smaller tile: photo, name, role, what they did and how to reach them. */
+/** One person's tile: photo, name, role, what they built and how to reach them, on their colour. */
 @Composable
 private fun MemberTile(member: TeamMember, onEmail: (String) -> Unit, onOpenLink: (String) -> Unit, modifier: Modifier) {
+    val onColor = Color.White
     Column(
         modifier
             .clip(TileShape)
-            .background(MaterialTheme.colorScheme.surfaceContainer)
+            .background(member.color)
             .padding(16.dp)
     ) {
-        MemberPhoto(member, 60.dp, MaterialTheme.colorScheme.surface)
+        MemberPhoto(member, 64.dp, onColor.copy(alpha = 0.35f))
         Spacer(Modifier.height(12.dp))
-        Text(member.name, style = MaterialTheme.typography.titleMedium)
+        Text(member.name, style = MaterialTheme.typography.titleMedium, color = onColor)
         Spacer(Modifier.height(4.dp))
-        Pill(member.role, emphasized = true)
+        AccentPill(member.role, onColor)
         Spacer(Modifier.height(8.dp))
         Text(
             member.contribution,
             style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            color = onColor.copy(alpha = 0.9f),
             modifier = Modifier.weight(1f, fill = true)
         )
         Spacer(Modifier.height(12.dp))
-        val muted = MaterialTheme.colorScheme.onSurfaceVariant
         // narrow tile: let a long address wrap after the "@" instead of being cut off
-        ContactLine(Icons.Rounded.AlternateEmail, member.email.replace("@", "@\u200B"), muted, maxLines = 2) { onEmail(member.email) }
-        ContactLine(null, linkedInHandle(member.linkedIn), muted) { onOpenLink(member.linkedIn) }
+        ContactLine(Icons.Rounded.AlternateEmail, member.email.replace("@", "@​"), onColor, maxLines = 2) { onEmail(member.email) }
+        ContactLine(null, linkedInHandle(member.linkedIn), onColor) { onOpenLink(member.linkedIn) }
         Spacer(Modifier.height(10.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            FilledTonalIconButton(onClick = { onEmail(member.email) }, modifier = Modifier.size(40.dp), colors = tileButtonColors()) {
+            FilledTonalIconButton(onClick = { onEmail(member.email) }, modifier = Modifier.size(40.dp), colors = tileButtonColors(onColor)) {
                 Icon(Icons.Rounded.MailOutline, contentDescription = "Email ${member.name}", modifier = Modifier.size(20.dp))
             }
-            FilledTonalIconButton(onClick = { onOpenLink(member.linkedIn) }, modifier = Modifier.size(40.dp), colors = tileButtonColors()) {
+            FilledTonalIconButton(onClick = { onOpenLink(member.linkedIn) }, modifier = Modifier.size(40.dp), colors = tileButtonColors(onColor)) {
                 LinkedInBadge(Modifier.size(20.dp), Color.White, LinkedInBlue, contentDescription = "${member.name} on LinkedIn")
             }
         }
     }
 }
 
+/** Small translucent label for a role, readable on any of the tiles' accent colours. */
 @Composable
-private fun tileButtonColors() = IconButtonDefaults.filledTonalIconButtonColors(
-    containerColor = MaterialTheme.colorScheme.surface,
-    contentColor = MaterialTheme.colorScheme.onSurface
+private fun AccentPill(text: String, onColor: Color) {
+    Text(
+        text = text,
+        style = MaterialTheme.typography.labelSmall,
+        color = onColor,
+        modifier = Modifier
+            .clip(CircleShape)
+            .background(onColor.copy(alpha = 0.2f))
+            .padding(horizontal = 10.dp, vertical = 4.dp)
+    )
+}
+
+@Composable
+private fun tileButtonColors(onColor: Color) = IconButtonDefaults.filledTonalIconButtonColors(
+    containerColor = onColor.copy(alpha = 0.18f),
+    contentColor = onColor
 )
 
 /** Closing tile about the project itself. */
@@ -610,30 +570,6 @@ private fun ProjectTile(memberCount: Int, appVersion: String, modifier: Modifier
     }
 }
 
-@Composable
-private fun ContactChip(
-    label: String,
-    icon: @Composable () -> Unit,
-    container: Color,
-    content: Color,
-    modifier: Modifier = Modifier,
-    onClick: () -> Unit
-) {
-    Row(
-        modifier
-            .clip(CircleShape)
-            .background(container)
-            .clickable(onClick = onClick)
-            .padding(horizontal = 14.dp, vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.Center
-    ) {
-        CompositionLocalProvider(LocalContentColor provides content) { icon() }
-        Spacer(Modifier.width(8.dp))
-        Text(label, style = MaterialTheme.typography.labelLarge, color = content)
-    }
-}
-
 /** One tappable contact detail: an icon (or the LinkedIn mark when [icon] is null) and the text. */
 @Composable
 private fun ContactLine(icon: ImageVector?, text: String, color: Color, maxLines: Int = 1, onClick: () -> Unit) {
@@ -646,12 +582,12 @@ private fun ContactLine(icon: ImageVector?, text: String, color: Color, maxLines
         verticalAlignment = if (maxLines > 1) Alignment.Top else Alignment.CenterVertically
     ) {
         if (icon != null) {
-            Icon(icon, contentDescription = null, tint = color, modifier = Modifier.padding(top = 2.dp).size(14.dp))
+            Icon(icon, contentDescription = null, tint = color.copy(alpha = 0.85f), modifier = Modifier.padding(top = 2.dp).size(14.dp))
         } else {
-            LinkedInBadge(Modifier.size(14.dp), Color.White, LinkedInBlue)
+            LinkedInBadge(Modifier.size(14.dp), color, LinkedInBlue)
         }
         Spacer(Modifier.width(6.dp))
-        Text(text, style = MaterialTheme.typography.bodySmall, color = color, maxLines = maxLines, overflow = TextOverflow.Ellipsis)
+        Text(text, style = MaterialTheme.typography.bodySmall, color = color.copy(alpha = 0.85f), maxLines = maxLines, overflow = TextOverflow.Ellipsis)
     }
 }
 
@@ -683,11 +619,23 @@ val SampleTeam = listOf(
     TeamMember(
         "Redwan Hussain", "Main developer · Project manager",
         "Built the app and its end-to-end encryption, and led the project from plan to release.",
-        "redwan491560@gmail.com", "https://www.linkedin.com/in/redwan-hussain-edu/"
+        "redwan491560@gmail.com", "https://www.linkedin.com/in/redwan-hussain-edu/", AvatarColors[0]
     ),
-    TeamMember("Mizanur Rahman", "Database design", "Designed the Firebase data model for chats, groups and channels.", "mizan21331@gmail.com", "https://www.linkedin.com/in/mizanrahmanx/"),
-    TeamMember("Tonmoy Chanda", "UI design", "Shaped the screens, layouts and visual style of the app.", "tonmoychanda07@gmail.com", "https://www.linkedin.com/in/tonmoy-chanda/"),
-    TeamMember("Abu Adnan Shad", "QA testing", "Tested every feature and tracked down bugs before each release.", "adnanshad1035@gmail.com", "https://www.linkedin.com/in/abuadnanshad/"),
+    TeamMember(
+        "Mizanur Rahman", "Database design",
+        "Designed the Firebase data model for chats, groups and channels.",
+        "mizan21331@gmail.com", "https://www.linkedin.com/in/mizanrahmanx/", AvatarColors[1]
+    ),
+    TeamMember(
+        "Tonmoy Chanda", "UI design",
+        "Shaped the screens, layouts and visual style of the app.",
+        "tonmoychanda07@gmail.com", "https://www.linkedin.com/in/tonmoy-chanda/", AvatarColors[3]
+    ),
+    TeamMember(
+        "Abu Adnan Shad", "QA testing",
+        "Tested every feature and tracked down bugs before each release.",
+        "adnanshad1035@gmail.com", "https://www.linkedin.com/in/abuadnanshad/", AvatarColors[2]
+    ),
 )
 
 @Preview

@@ -48,6 +48,7 @@ import com.example.clubmate.ui.group.NoticeBoardRoute
 import com.example.clubmate.ui.home.HomeRoute
 import com.example.clubmate.ui.settings.PrivacyRoute
 import com.example.clubmate.ui.settings.appVersionName
+import com.example.clubmate.ui.theme.AvatarColors
 import com.example.clubmate.ui.settings.ProfileRoute
 import com.example.clubmate.ui.settings.SettingsTabRoute
 import com.example.clubmate.ui.settings.TeamMember
@@ -321,25 +322,25 @@ private fun TeamRoute(onBack: () -> Unit) {
             "Redwan Hussain", "Main developer · Project manager",
             "Built the app and its end-to-end encryption, and led the project from plan to release.",
             "redwan491560@gmail.com", "https://www.linkedin.com/in/redwan-hussain-edu/",
-            painterResource(R.drawable.redwan)
+            color = AvatarColors[0], photo = painterResource(R.drawable.redwan)
         ),
         TeamMember(
             "Mizanur Rahman", "Database design",
             "Designed the Firebase data model for chats, groups and channels.",
             "mizan21331@gmail.com", "https://www.linkedin.com/in/mizanrahmanx/",
-            painterResource(R.drawable.mizan), zoom = 1.1f
+            color = AvatarColors[1], photo = painterResource(R.drawable.mizan), zoom = 1.1f
         ),
         TeamMember(
             "Tonmoy Chanda", "UI design",
             "Shaped the screens, layouts and visual style of the app.",
             "tonmoychanda07@gmail.com", "https://www.linkedin.com/in/tonmoy-chanda/",
-            painterResource(R.drawable.tonmoy), zoom = 1.1f
+            color = AvatarColors[3], photo = painterResource(R.drawable.tonmoy), zoom = 1.1f
         ),
         TeamMember(
             "Abu Adnan Shad", "QA testing",
             "Tested every feature and tracked down bugs before each release.",
             "adnanshad1035@gmail.com", "https://www.linkedin.com/in/abuadnanshad/",
-            painterResource(R.drawable.adnan), zoom = 1.1f
+            color = AvatarColors[2], photo = painterResource(R.drawable.adnan), zoom = 1.1f
         ),
     )
     TeamScreen(
