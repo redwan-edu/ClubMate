@@ -12,9 +12,9 @@ class ClubMateApplication : Application() {
         E2eeManager.init(this)
 
         val config: HashMap<String, String> = hashMapOf(
-            "cloud_name" to "dkzfvsdfj",
-            "api_key" to "493742256116112",
-            "api_secret" to "aOwROuGvEMSuOfhBhGsdWz4iMjQ"
+            "cloud_name" to BuildConfig.CLOUDINARY_CLOUD_NAME,
+            "api_key" to BuildConfig.CLOUDINARY_API_KEY,
+            "api_secret" to BuildConfig.CLOUDINARY_API_SECRET
         )
 
         MediaManager.init(this, config)

@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.jetbrains.kotlin.android)
@@ -5,6 +7,13 @@ plugins {
     alias(libs.plugins.compose.compiler)
    alias(libs.plugins.google.gms.google.services)
 }
+
+// Your own Cloudinary account, read from local.properties (never committed).
+val localProps = Properties().apply {
+    val file = rootProject.file("local.properties")
+    if (file.exists()) file.inputStream().use { load(it) }
+}
+fun localProp(key: String): String = localProps.getProperty(key, "")
 
 android {
     namespace = "com.example.clubmate"
@@ -21,6 +30,10 @@ android {
         vectorDrawables {
             useSupportLibrary = true
         }
+
+        buildConfigField("String", "CLOUDINARY_CLOUD_NAME", "\"${localProp("cloudinary.cloudName")}\"")
+        buildConfigField("String", "CLOUDINARY_API_KEY", "\"${localProp("cloudinary.apiKey")}\"")
+        buildConfigField("String", "CLOUDINARY_API_SECRET", "\"${localProp("cloudinary.apiSecret")}\"")
     }
 
     buildTypes {
@@ -41,6 +54,7 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true
     }
     composeOptions {
         kotlinCompilerExtensionVersion = "1.5.1"
@@ -67,10 +81,8 @@ dependencies {
     implementation("androidx.compose.material:material-icons-extended")
 
     implementation(libs.androidx.runtime.livedata)
-    implementation(libs.firebase.firestore.ktx)
     implementation(libs.firebase.database.ktx)
     implementation(libs.firebase.database)
-    implementation(libs.firebase.crashlytics.buildtools)
     testImplementation(libs.junit)
 
     androidTestImplementation(libs.androidx.junit)
@@ -87,17 +99,13 @@ dependencies {
 
     // firebase
     implementation(libs.firebase.auth)
-    implementation(libs.play.services.auth)
 
     // coil
     implementation("io.coil-kt.coil3:coil-compose:3.0.4")
-    implementation("io.coil-kt:coil-compose:2.7.0")
     implementation("io.coil-kt.coil3:coil-network-okhttp:3.0.4")
     // serialization
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
 
-    // appwrite
-    implementation("io.appwrite:sdk-for-android:6.0.0")
     // end-to-end encryption (X25519 + HKDF)
     implementation("com.google.crypto.tink:tink-android:1.23.0")
 
