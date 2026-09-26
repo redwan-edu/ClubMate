@@ -95,6 +95,8 @@ class GroupViewmodel : ViewModel() {
     private var participantsListener: ValueEventListener? = null
     private var requestsGrpId: String? = null
     private var requestsListener: ValueEventListener? = null
+    private var groupsUid: String? = null
+    private var groupsListener: ValueEventListener? = null
 
     private val myUid: String? get() = FirebaseAuth.getInstance().uid
 
@@ -260,9 +262,19 @@ class GroupViewmodel : ViewModel() {
     }
 
     // groups
+
+    /**
+     * Continuous listener; calling it again for the same user is a no-op. Refreshes automatically
+     * when this user's `groups_connected` list changes, so a group appears here as soon as an admin
+     * approves a join request, without needing to reopen the app.
+     */
     fun listenForGroups(uid: String) {
-        userRef.child(uid).child("groups_connected")
-            .addListenerForSingleValueEvent(object : ValueEventListener {
+        if (groupsUid == uid && groupsListener != null) return
+        groupsListener?.let { userRef.child(groupsUid!!).child("groups_connected").removeEventListener(it) }
+        groupsUid = uid
+
+        groupsListener = userRef.child(uid).child("groups_connected")
+            .addValueEventListener(object : ValueEventListener {
                 override fun onDataChange(snapshot: DataSnapshot) {
                     if (!snapshot.exists()) {
                         _groupsList.value = emptyList()
@@ -298,7 +310,7 @@ class GroupViewmodel : ViewModel() {
                         }
 
                         val results = deferredList.awaitAll().filterNotNull()
-                        _groupsList.value = results // Only update once all groups have been fetched
+                        if (groupsUid == uid) _groupsList.value = results
                     }
                 }
 
@@ -747,6 +759,26 @@ class GroupViewmodel : ViewModel() {
             .addOnSuccessListener { onComplete(true) }
             .addOnFailureListener { onComplete(false) }
 
+    }
+
+    /**
+     * Where [uid] stands with [grpId], checked against the server so a stale local group list
+     * never shows "Ask to join" for a group the person is already in or has already asked to join.
+     */
+    fun checkGroupMembership(grpId: String, uid: String, onResult: (GroupMembership) -> Unit) {
+        grpRef.child(grpId).child("participants").child(uid).get()
+            .addOnSuccessListener { participant ->
+                if (participant.exists()) {
+                    onResult(GroupMembership.Member)
+                } else {
+                    grpRef.child(grpId).child("request").child(uid).get()
+                        .addOnSuccessListener { request ->
+                            onResult(if (request.exists()) GroupMembership.Requested else GroupMembership.None)
+                        }
+                        .addOnFailureListener { onResult(GroupMembership.None) }
+                }
+            }
+            .addOnFailureListener { onResult(GroupMembership.None) }
     }
 
 
@@ -1240,6 +1272,7 @@ class GroupViewmodel : ViewModel() {
         stopEvents()
         participantsListener?.let { grpRef.child(participantsGrpId!!).child("participants").removeEventListener(it) }
         requestsListener?.let { grpRef.child(requestsGrpId!!).child("request").removeEventListener(it) }
+        groupsListener?.let { userRef.child(groupsUid!!).child("groups_connected").removeEventListener(it) }
         super.onCleared()
     }
 
@@ -1302,4 +1335,9 @@ data class UserJoinDetails(
 
 enum class GroupStatus {
     Loading, Success, Failed
+}
+
+/** Where a person stands with a group, found by [GroupViewmodel.checkGroupMembership]. */
+enum class GroupMembership {
+    Member, Requested, None
 }

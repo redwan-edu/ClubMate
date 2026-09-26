@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -20,6 +21,7 @@ import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Groups
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Tag
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -56,6 +58,7 @@ import com.example.clubmate.ui.theme.ClubMateTheme
 import com.example.clubmate.util.getInternetConnectionStatus
 import com.example.clubmate.viewmodel.AuthViewModel
 import com.example.clubmate.viewmodel.ChatViewModel
+import com.example.clubmate.viewmodel.GroupMembership
 import com.example.clubmate.viewmodel.GroupViewmodel
 
 // ---------------------------------------------------------------- sheet contents
@@ -123,8 +126,12 @@ fun NewChatSheetContent(
     }
 }
 
-/** What happened to a join request, shown in the group sheet. */
-enum class JoinState { Idle, Sending, Sent, AlreadyMember }
+/**
+ * A found group's status for the signed-in person, shown in the group sheet. [Checking] is the
+ * server look-up that runs right after a group is found, so the sheet never shows "Ask to join"
+ * for a group the person is already in or has already asked to join.
+ */
+enum class JoinState { Idle, Checking, NotConnected, Sending, Pending, Member }
 
 @Composable
 fun GroupActionsSheetContent(
@@ -159,7 +166,13 @@ fun GroupActionsSheetContent(
             } else {
                 ResultCard(found.grpName, found.description, found.grpName, found.photoUrl, isGroup = true)
                 when (joinState) {
-                    JoinState.Sent -> Row(verticalAlignment = Alignment.CenterVertically) {
+                    JoinState.Checking -> Row(verticalAlignment = Alignment.CenterVertically) {
+                        CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                        Spacer(Modifier.width(10.dp))
+                        Text("Checking...", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+
+                    JoinState.Pending -> Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(Icons.Rounded.CheckCircle, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
                         Spacer(Modifier.width(8.dp))
                         Text(
@@ -168,7 +181,7 @@ fun GroupActionsSheetContent(
                         )
                     }
 
-                    JoinState.AlreadyMember -> PrimaryButton("Open group", onOpenGroup)
+                    JoinState.Member -> PrimaryButton("Open group", onOpenGroup)
                     else -> PrimaryButton("Ask to join", onRequestJoin, loading = joinState == JoinState.Sending)
                 }
             }
@@ -283,7 +296,6 @@ fun HomeRoute(
                         myUid = myUid,
                         myEmail = me?.email.orEmpty(),
                         myName = me?.username.orEmpty(),
-                        memberOf = groups.map { it.grpId }.toSet(),
                         groupViewModel = groupViewModel,
                         onCreateGroup = { sheet = null; onCreateGroup() },
                         onOpenGroup = { sheet = null; onOpenGroup(it) }
@@ -330,7 +342,6 @@ private fun GroupSheet(
     myUid: String,
     myEmail: String,
     myName: String,
-    memberOf: Set<String>,
     groupViewModel: GroupViewmodel,
     onCreateGroup: () -> Unit,
     onOpenGroup: (String) -> Unit
@@ -344,7 +355,22 @@ private fun GroupSheet(
         state is GroupState.Error && state.msg.isNotBlank() && state.msg != "Query cannot be empty" -> "No group has this ID. Check it with an admin."
         else -> null
     }
-    val effectiveJoin = if (found != null && found.grpId in memberOf) JoinState.AlreadyMember else joinState
+
+    // A group was found: ask the server whether this person is already in it or already asked,
+    // rather than trusting the (possibly stale) list of groups already loaded on this screen.
+    LaunchedEffect(found?.grpId) {
+        val group = found
+        if (group != null) {
+            joinState = JoinState.Checking
+            groupViewModel.checkGroupMembership(group.grpId, myUid) { membership ->
+                joinState = when (membership) {
+                    GroupMembership.Member -> JoinState.Member
+                    GroupMembership.Requested -> JoinState.Pending
+                    GroupMembership.None -> JoinState.NotConnected
+                }
+            }
+        }
+    }
 
     GroupActionsSheetContent(
         groupId = groupId,
@@ -352,14 +378,14 @@ private fun GroupSheet(
         searching = state is GroupState.Loading,
         found = found,
         error = error,
-        joinState = effectiveJoin,
+        joinState = joinState,
         onCreateGroup = onCreateGroup,
         onSearch = { if (groupId.isNotBlank()) groupViewModel.findGroup(groupId) },
         onRequestJoin = {
             val group = found ?: return@GroupActionsSheetContent
             joinState = JoinState.Sending
             groupViewModel.sendJoinRequest(uid = myUid, email = myEmail, username = myName, grpId = group.grpId) { ok ->
-                joinState = if (ok) JoinState.Sent else JoinState.Idle
+                joinState = if (ok) JoinState.Pending else JoinState.NotConnected
                 sendError = if (ok) null else "Couldn't send the request. Try again."
             }
         },
@@ -416,7 +442,7 @@ fun GroupSheetPreview() = ClubMateTheme {
         GroupActionsSheetContent(
             "93beefc4b3bf4d42a1d1", {}, false,
             Routes.GrpDetails(grpId = "93beefc4b3bf4d42a1d1", grpName = "Robotics Club", description = "Building robots, one line follower at a time."),
-            null, JoinState.Idle, {}, {}, {}, {}
+            null, JoinState.NotConnected, {}, {}, {}, {}
         )
     }
 }
