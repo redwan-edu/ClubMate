@@ -191,9 +191,9 @@ To check that no one is listening in on a chat, open the other person's profile 
 
 ## The team
 
-- **Redwan Hussain**: project lead, app and encryption
-- **Mizanur Rahman**: database design
-- **Tonmoy Chanda**: UI design
-- **Abu Adnan Shad**: testing
+* **Redwan Hussain**: Project Lead, App Development & Encryption
+* **Mizanur Rahman**: Database Design
+* **Tonmoy Chanda**: UI Design
+* **Abu Adnan Shad**: Research & Development, Testing
 
 Found a bug or have an idea? Open an issue on GitHub.
